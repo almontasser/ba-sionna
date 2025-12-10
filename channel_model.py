@@ -135,7 +135,8 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
             )
             ofdm_channel = GenerateOFDMChannel(
                 channel_model=cdl,
-                resource_grid=self.resource_grid
+                resource_grid=self.resource_grid,
+                normalize_channel=True  # stabilize power across batches
             )
             self._cdl_models.append(cdl)
             self._ofdm_channels.append(ofdm_channel)

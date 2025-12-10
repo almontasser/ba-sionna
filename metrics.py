@@ -222,16 +222,18 @@ class ExhaustiveSearchBaseline:
         }
 
 
-def compute_loss(beamforming_gains, channels=None):
+def compute_loss(beamforming_gains, channels=None, use_log_gain=True):
     """
     Compute training loss.
     
-    Per arXiv paper: Objective is normalized by channel Frobenius norm
-    to avoid overemphasis on UEs with good channels.
+    For Sionna CDL the channel power varies significantly across batches; using
+    a log-domain objective stabilizes gradients and aligns with rate-like
+    metrics. Optionally normalizes by channel Frobenius norm (paper objective).
     
     Args:
         beamforming_gains: Beamforming gains (batch,) - linear scale |w^H H f|^2
         channels: Channel matrices (batch, nrx, ntx) - optional for normalization
+        use_log_gain: If True, use -E[log(G_normalized)]; else -E[G_normalized]
         
     Returns:
         Scalar loss value
@@ -240,11 +242,13 @@ def compute_loss(beamforming_gains, channels=None):
         # Normalize by channel Frobenius norm squared per paper
         channel_norms_squared = tf.reduce_sum(tf.abs(channels) ** 2, axis=(1, 2))  # (batch,)
         normalized_gains = beamforming_gains / (channel_norms_squared + 1e-10)
-        # Maximize normalized BF gain = minimize negative normalized BF gain
-        loss = -tf.reduce_mean(normalized_gains)
     else:
-        # Fallback: maximize BF gain without normalization
-        loss = -tf.reduce_mean(beamforming_gains)
+        normalized_gains = beamforming_gains
+    
+    if use_log_gain:
+        loss = -tf.reduce_mean(tf.math.log(normalized_gains + 1e-7))
+    else:
+        loss = -tf.reduce_mean(normalized_gains)
     
     return loss
 

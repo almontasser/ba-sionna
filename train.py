@@ -158,7 +158,7 @@ def create_model(config, scheme='C3'):
         print("  - N2 (BS FNN): ✅ Learned - maps feedback to final BS beam")
         print("  - N3 (Codebook): ✅ Learned - trainable BS beam codebook")
         print("  - Feedback: 16-dim real VECTOR (m_FB)")
-        print("  - Loss: Normalized BF gain only")
+        print("  - Loss: Normalized log BF gain (stabilized for CDL)")
     
     return model
 
@@ -204,7 +204,7 @@ def train_step(model, optimizer, batch_size, snr_db, scheme='C3'):
             )
         else:
             # C2/C3: Use standard normalized BF gain loss
-            loss = compute_loss(results['beamforming_gain'], results['channels'])
+            loss = compute_loss(results['beamforming_gain'], results['channels'], use_log_gain=True)
             ce_loss = tf.constant(0.0)  # No CE loss for C2/C3
     
     # Compute gradients
