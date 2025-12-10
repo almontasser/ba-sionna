@@ -1,14 +1,26 @@
-# Figure 4
-python train.py --scheme C1 -T 16 --epochs 100
-python train.py --scheme C2 -T 16 --epochs 100
-python train.py --scheme C3 -T 16 --epochs 100
+# Configurable defaults (override via env or CLI args)
+SCHEME=${SCHEME:-C3}
+T=${T:-16}
+EPOCHS=${EPOCHS:-12}
+CDL_MODELS=${CDL_MODELS:-"A,C"}
+TARGET_SNR=${TARGET_SNR:-5}
 
-# Figure 5
-# Train C2 models
-# for T in 1 3 5 7 8 9 15; do
-#     python train.py --scheme C2 -T $T --epochs 100
-# done
-# # Train C3 models
-# for T in 1 3 5 7 8 9 15; do
-#     python train.py --scheme C3 -T $T --epochs 100
-# done
+# Run training (additional args passed through)
+python train.py \
+  --scheme "$SCHEME" \
+  -T "$T" \
+  --epochs "$EPOCHS" \
+  --cdl_models "$CDL_MODELS" \
+  --target_snr "$TARGET_SNR" \
+  "$@"
+
+CDL_MODELS=${CDL_MODELS:-"A,B,C,D,E"}
+
+# Run training (additional args passed through)
+python train.py \
+  --scheme "$SCHEME" \
+  -T "$T" \
+  --epochs "50" \
+  --cdl_models "$CDL_MODELS" \
+  --target_snr "20" \
+  "$@"

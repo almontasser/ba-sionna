@@ -521,6 +521,10 @@ if __name__ == "__main__":
                        help='Number of sensing steps (T). Default: Config.T (16)')
     parser.add_argument('--checkpoint_dir', type=str, default=None, help='Checkpoint directory')
     parser.add_argument('--log_dir', type=str, default=None, help='Log directory')
+    parser.add_argument('--cdl_models', type=str, default=None,
+                       help='Comma-separated list of CDL models to use (e.g., "A,C,D")')
+    parser.add_argument('--target_snr', type=float, default=None,
+                       help='Target SNR (dB) for satisfaction probability metrics')
     parser.add_argument('--scheme', type=str, default='C3', 
                        choices=['C1', 'C2', 'C3'],
                        help='Training scheme (per paper Table I): '
@@ -540,6 +544,10 @@ if __name__ == "__main__":
         Config.LEARNING_RATE = args.lr
     if args.num_sensing_steps is not None:
         Config.T = args.num_sensing_steps
+    if args.cdl_models is not None:
+        Config.CDL_MODELS = [m.strip() for m in args.cdl_models.split(',') if m.strip()]
+    if args.target_snr is not None:
+        Config.SNR_TARGET = args.target_snr
     
     if args.test_mode:
         Config.EPOCHS = 1
