@@ -41,7 +41,7 @@ class SionnaCDLChannelModel:
 ### 2. `config.py` ✅
 
 **Changes:**
-- Added `USE_SIONNA_CDL = True` flag to enable/disable CDL
+ - Channel model flag removed; Sionna CDL is always used
 - Added `CDL_MODELS = ["A", "B", "C", "D", "E"]` list
 - Added `DELAY_SPREAD_RANGE = (10e-9, 300e-9)` for randomization
 - Added `UE_SPEED_RANGE = (0.0, 30.0)` for Doppler effects
@@ -53,13 +53,12 @@ class SionnaCDLChannelModel:
 ```python
 # Fixed SNR, geometric channel
 SNR_TRAIN = 10.0
-NUM_PATHS = 3
 ```
 
 **After:**
 ```python
 # Domain randomization enabled
-USE_SIONNA_CDL = True
+# (Flag removed) Sionna CDL always enabled
 CDL_MODELS = ["A", "B", "C", "D", "E"]
 SNR_TRAIN_RANDOMIZE = True
 SNR_TRAIN_RANGE = (-5.0, 20.0)
@@ -72,31 +71,24 @@ UE_SPEED_RANGE = (0.0, 30.0)
 **Changes:**
 - Added imports: `SionnaCDLChannelModel`, `SIONNA_AVAILABLE`
 - Updated `__init__` to accept CDL parameters
-- Added conditional channel model instantiation (Sionna CDL vs geometric)
+- Channel model is now **always** Sionna CDL (geometric fallback removed)
 - Zero changes to N1/N2/N3 networks or training logic!
 
-**Before:**
+**After (current):**
 ```python
-self.channel_model = GeometricChannelModel(
+if not SIONNA_AVAILABLE:
+    raise ImportError("Sionna must be installed for channel generation.")
+self.channel_model = SionnaCDLChannelModel(
     num_tx_antennas=num_tx_antennas,
     num_rx_antennas=num_rx_antennas,
-    num_paths=num_paths
+    carrier_frequency=carrier_frequency,
+    cdl_models=cdl_models,
+    delay_spread_range=delay_spread_range,
+    ue_speed_range=ue_speed_range,
+    fft_size=Config.RESOURCE_GRID_FFT_SIZE,
+    num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
+    subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
 )
-```
-
-**After:**
-```python
-if use_sionna_cdl and SIONNA_AVAILABLE:
-    self.channel_model = SionnaCDLChannelModel(
-        num_tx_antennas=num_tx_antennas,
-        num_rx_antennas=num_rx_antennas,
-        carrier_frequency=carrier_frequency,
-        cdl_models=cdl_models,
-        delay_spread_range=delay_spread_range,
-        ue_speed_range=ue_speed_range
-    )
-else:
-    self.channel_model = GeometricChannelModel(...)
 ```
 
 ### 4. `train.py` ✅
@@ -221,7 +213,7 @@ This automatically:
 
 Edit `config.py`:
 ```python
-Config.USE_SIONNA_CDL = False
+Sionna CDL is mandatory (no flag toggle)
 ```
 
 ### Custom CDL Selection
@@ -263,7 +255,7 @@ Config.CDL_MODELS = ["A", "B", "E"]
 Before running full training, verify:
 
 - [ ] Sionna installed: `pip install sionna`
-- [ ] Config updated: `Config.USE_SIONNA_CDL = True`
+- [ ] Config updated: Sionna CDL always on (no flag)
 - [ ] Test channel generation:
   ```python
   from channel_model import SionnaCDLChannelModel

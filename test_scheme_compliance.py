@@ -115,7 +115,6 @@ def test_c3_codebook_learning():
     model_c3 = BeamAlignmentModel(
         num_tx_antennas=Config.NTX,
         num_rx_antennas=Config.NRX,
-        num_paths=Config.NUM_PATHS,
         codebook_size=Config.NCB,
         num_sensing_steps=Config.T,
         rnn_hidden_size=Config.RNN_HIDDEN_SIZE,
@@ -181,7 +180,6 @@ def test_c1_differentiable_feedback():
     model_c1 = BeamAlignmentModel(
         num_tx_antennas=Config.NTX,
         num_rx_antennas=Config.NRX,
-        num_paths=Config.NUM_PATHS,
         codebook_size=Config.NCB,
         num_sensing_steps=Config.T,
         rnn_hidden_size=Config.RNN_HIDDEN_SIZE,
@@ -271,7 +269,6 @@ def main():
         models[scheme] = BeamAlignmentModel(
             num_tx_antennas=Config.NTX,
             num_rx_antennas=Config.NRX,
-            num_paths=Config.NUM_PATHS,
             codebook_size=Config.NCB,
             num_sensing_steps=Config.T,
             rnn_hidden_size=Config.RNN_HIDDEN_SIZE,

@@ -116,7 +116,6 @@ Key parameters in `config.py`:
 |-----------|---------|-------------|
 | `NTX` | 64 | Number of transmit antennas |
 | `NRX` | 16 | Number of receive antennas |
-| `NUM_PATHS` | 3 | Number of propagation paths |
 | `T` | 8 | Number of sensing steps |
 | `NCB` | 8 | BS codebook size |
 | `BATCH_SIZE` | 128 | Training batch size |

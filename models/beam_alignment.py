@@ -50,7 +50,7 @@ from config import Config
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from channel_model import GeometricChannelModel, SionnaCDLChannelModel, SIONNA_AVAILABLE
+from channel_model import SionnaCDLChannelModel, SIONNA_AVAILABLE
 from utils import (
     compute_beamforming_gain,
     compute_beamforming_gain_db,
@@ -79,7 +79,6 @@ class BeamAlignmentModel(tf.keras.Model):
         self,
         num_tx_antennas,
         num_rx_antennas,
-        num_paths=3,
         codebook_size=8,
         num_sensing_steps=8,
         rnn_hidden_size=128,
@@ -88,7 +87,6 @@ class BeamAlignmentModel(tf.keras.Model):
         start_beam_index=0,
         random_start=False,
         scheme="C3",
-        use_sionna_cdl=True,
         carrier_frequency=28e9,
         cdl_models=None,
         delay_spread_range=(10e-9, 300e-9),
@@ -99,7 +97,6 @@ class BeamAlignmentModel(tf.keras.Model):
         Args:
             num_tx_antennas: Number of BS transmit antennas (NTX)
             num_rx_antennas: Number of UE receive antennas (NRX)
-            num_paths: Number of propagation paths (L) - for geometric model only
             codebook_size: BS codebook size (NCB)
             num_sensing_steps: Number of sensing steps (T)
             rnn_hidden_size: UE RNN hidden size
@@ -111,7 +108,6 @@ class BeamAlignmentModel(tf.keras.Model):
                 C1: Only N1 (UE RNN), no N2, fixed codebook
                 C2: N1 + N2 (BS FNN), fixed codebook
                 C3: N1 + N2 + N3 (learnable codebook)
-            use_sionna_cdl: Use Sionna CDL channel model (vs geometric)
             carrier_frequency: Carrier frequency in Hz (for Sionna CDL)
             cdl_models: List of CDL model names (e.g., ["A", "B", "C", "D", "E"])
             delay_spread_range: (min, max) delay spread for CDL randomization
@@ -121,7 +117,6 @@ class BeamAlignmentModel(tf.keras.Model):
 
         self.num_tx_antennas = num_tx_antennas
         self.num_rx_antennas = num_rx_antennas
-        self.num_paths = num_paths
         self.codebook_size = codebook_size
         self.num_sensing_steps = num_sensing_steps
         self.start_beam_index = start_beam_index
@@ -144,31 +139,20 @@ class BeamAlignmentModel(tf.keras.Model):
         self.use_n2_fnn = use_n2_fnn
 
         # Create channel model - Sionna CDL or geometric
-        if use_sionna_cdl and SIONNA_AVAILABLE:
-            print(f"  Using Sionna CDL channel model with domain randomization")
-            self.channel_model = SionnaCDLChannelModel(
-                num_tx_antennas=num_tx_antennas,
-                num_rx_antennas=num_rx_antennas,
-                carrier_frequency=carrier_frequency,
-                cdl_models=cdl_models,
-                delay_spread_range=delay_spread_range,
-                ue_speed_range=ue_speed_range,
-                fft_size=Config.RESOURCE_GRID_FFT_SIZE,
-                num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
-                subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
-            )
-        else:
-            if use_sionna_cdl and not SIONNA_AVAILABLE:
-                print(
-                    "  WARNING: Sionna not available. Falling back to geometric channel model."
-                )
-            print(f"  Using geometric channel model ({num_paths} paths)")
-            self.channel_model = GeometricChannelModel(
-                num_tx_antennas=num_tx_antennas,
-                num_rx_antennas=num_rx_antennas,
-                num_paths=num_paths,
-                normalize_channel=False,  # Per paper: no channel normalization
-            )
+        if not SIONNA_AVAILABLE:
+            raise ImportError("Sionna must be installed for channel generation.")
+        print("  Using Sionna CDL channel model with domain randomization")
+        self.channel_model = SionnaCDLChannelModel(
+            num_tx_antennas=num_tx_antennas,
+            num_rx_antennas=num_rx_antennas,
+            carrier_frequency=carrier_frequency,
+            cdl_models=cdl_models,
+            delay_spread_range=delay_spread_range,
+            ue_speed_range=ue_speed_range,
+            fft_size=Config.RESOURCE_GRID_FFT_SIZE,
+            num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
+            subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
+        )
 
         self.bs_controller = BSController(
             num_antennas=num_tx_antennas,
@@ -368,7 +352,6 @@ if __name__ == "__main__":
     model = BeamAlignmentModel(
         num_tx_antennas=64,
         num_rx_antennas=16,
-        num_paths=3,
         codebook_size=8,
         num_sensing_steps=8,
         rnn_hidden_size=128,

@@ -20,7 +20,7 @@ Successfully integrated **Sionna's 3GPP TR 38.901 CDL channel models** into your
 
 **Added:**
 ```python
-USE_SIONNA_CDL = True                      # Enable Sionna CDL
+# Sionna CDL is now always enabled (geometric fallback removed)
 CDL_MODELS = ["A", "B", "C", "D", "E"]     # All 5 profiles
 DELAY_SPREAD_RANGE = (10e-9, 300e-9)       # 10-300 ns
 UE_SPEED_RANGE = (0.0, 30.0)               # 0-30 m/s
@@ -170,7 +170,7 @@ python train.py --test_mode --scheme C3
 
 ```python
 # config.py
-Config.USE_SIONNA_CDL = False
+# (Flag removed) Sionna CDL is always used
 ```
 
 ### Train on Specific CDL Profiles
@@ -331,7 +331,7 @@ After 100 epochs of training:
 ✅ **Realistic Channels:** 3GPP standardized CDL models  
 ✅ **Domain Randomization:** Trains robust, generalizable models  
 ✅ **Drop-in Replacement:** No changes to N1/N2/N3  
-✅ **Easy to Use:** Just set `Config.USE_SIONNA_CDL = True`  
+✅ **Always On:** Sionna CDL is the sole channel model (no flag needed)  
 ✅ **Well Documented:** 5 comprehensive guides  
 ✅ **Production Ready:** Tested and validated  
 

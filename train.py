@@ -96,7 +96,6 @@ def create_model(config, scheme='C3'):
         config: Configuration object (Config class) containing:
             - NTX: Number of BS transmit antennas
             - NRX: Number of UE receive antennas
-            - NUM_PATHS: Number of channel propagation paths
             - NCB: BS codebook size
             - T: Number of sensing steps
             - RNN_HIDDEN_SIZE: UE RNN hidden state size
@@ -126,7 +125,6 @@ def create_model(config, scheme='C3'):
     model = BeamAlignmentModel(
         num_tx_antennas=config.NTX,
         num_rx_antennas=config.NRX,
-        num_paths=config.NUM_PATHS,
         codebook_size=config.NCB,
         num_sensing_steps=config.T,
         rnn_hidden_size=config.RNN_HIDDEN_SIZE,
@@ -135,8 +133,6 @@ def create_model(config, scheme='C3'):
         start_beam_index=variant.get("start_index", 0) or 0,
         random_start=variant.get("random_start", False),
         scheme=scheme,  # Pass scheme to model
-        # Sionna CDL parameters
-        use_sionna_cdl=config.USE_SIONNA_CDL,
         carrier_frequency=config.CARRIER_FREQUENCY,
         cdl_models=config.CDL_MODELS,
         delay_spread_range=config.DELAY_SPREAD_RANGE,
@@ -558,4 +554,3 @@ if __name__ == "__main__":
     
     # Run training
     train(Config, checkpoint_dir=checkpoint_dir, log_dir=args.log_dir, scheme=args.scheme)
-

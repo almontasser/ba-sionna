@@ -452,7 +452,7 @@ By replacing your geometric channel with Sionna CDL + domain randomization:
 2. **More Robust:** Handles diverse propagation scenarios (LOS/NLOS, delay spreads)
 3. **Better Generalization:** Works in real deployments, not just simulations
 4. **Same Architecture:** Zero changes to your N1/N2/N3 networks
-5. **Easy to Use:** Just set `Config.USE_SIONNA_CDL = True`
+5. **Easy to Use:** Sionna CDL is always enabled (no flag needed)
 
 **Bottom line:** Your beam alignment model will now train on **realistic mmWave channels** and be ready for **real-world deployment** with strong **robustness guarantees**.
 

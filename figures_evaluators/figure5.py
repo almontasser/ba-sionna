@@ -51,7 +51,6 @@ def generate_figure_5_c2_c3(config, output_dir="./results", num_samples=1000):
         model = BeamAlignmentModel(
             num_tx_antennas=config.NTX,
             num_rx_antennas=config.NRX,
-            num_paths=config.NUM_PATHS,
             codebook_size=config.NCB,
             num_sensing_steps=T_val,  # Use specific T value
             rnn_hidden_size=config.RNN_HIDDEN_SIZE,

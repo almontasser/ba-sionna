@@ -43,19 +43,9 @@ Open browser to: http://localhost:6006
 
 ## Configuration Options
 
-### Use Geometric Model (Baseline)
+### Channel Model
 
-To compare against the original geometric model:
-
-Edit `config.py`:
-```python
-Config.USE_SIONNA_CDL = False
-```
-
-Then train:
-```bash
-python train.py --scheme C3
-```
+Sionna CDL is the only channel model (geometric baseline removed).
 
 ### Train on Specific CDL Profiles
 
@@ -289,19 +279,13 @@ After training:
 ## Example: Full Training Pipeline
 
 ```bash
-# 1. Train baseline (geometric)
-python train.py --scheme C3 --checkpoint_dir ./checkpoints_geometric --epochs 100
-# Edit config.py: Config.USE_SIONNA_CDL = False
-
-# 2. Train with CDL (all profiles)
+# 1. Train with CDL (all profiles)
 python train.py --scheme C3 --checkpoint_dir ./checkpoints_cdl_all --epochs 100
-# Edit config.py: Config.USE_SIONNA_CDL = True
 
-# 3. Evaluate both models
-python evaluate_paper_figures.py --checkpoint_baseline ./checkpoints_geometric \
-                                 --checkpoint_cdl ./checkpoints_cdl_all
+# 2. Evaluate
+python evaluate_paper_figures.py --checkpoint_dir ./checkpoints_cdl_all
 
-# 4. View results
+# 3. View results
 tensorboard --logdir ./logs
 ```
 

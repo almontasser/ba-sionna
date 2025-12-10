@@ -21,6 +21,7 @@ The 3GPP standard defines 5 CDL profiles, each representing different propagatio
 | CDL-E | NLOS with small delay spread    | Urban micro, street canyon     | ~30 ns       | N/A            |
 
 **Key characteristics:**
+
 - Each model specifies cluster delays, powers, angles, and ray parameters
 - Includes realistic angle spread, shadow fading, and cross-polarization
 - Captures both LOS and NLOS propagation conditions
@@ -31,18 +32,22 @@ The 3GPP standard defines 5 CDL profiles, each representing different propagatio
 ### 1. Channel Model Replacement
 
 **Original (Geometric):**
+
 ```python
 H = Σ_{ℓ=1}^L α_ℓ a_RX(φ_ℓ^RX) a_TX^H(φ_ℓ^TX)
 ```
+
 - L paths (typically 3)
 - Random AoA/AoD: φ ~ U[-π/2, π/2]
 - Rayleigh fading: α ~ CN(0, 1)
 - Simple, fast, but unrealistic
 
 **New (Sionna CDL):**
+
 ```python
 H = CDL_model(profile, delay_spread, ue_speed, carrier_freq, arrays)
 ```
+
 - Profile: CDL-A/B/C/D/E from 3GPP TR 38.901
 - Delay spread: Controls multipath severity (10-300 ns)
 - UE speed: Affects Doppler shift (0-30 m/s)
@@ -59,7 +64,7 @@ Sionna CDL Output Shape:
 
 After Processing (for narrowband beam alignment):
   [batch, num_rx_ant, num_tx_ant]
-  
+
   Where:
   - num_rx = 1 (single UE)
   - num_tx = 1 (single BS)
@@ -68,6 +73,7 @@ After Processing (for narrowband beam alignment):
 ```
 
 **Why this works:**
+
 - Beam alignment operates in narrowband mode (single carrier)
 - Channel coherence time >> sensing time (quasi-static assumption)
 - H shape matches existing N1/N2/N3 input/output dimensions
@@ -77,7 +83,7 @@ After Processing (for narrowband beam alignment):
 
 ```
 channel_model.py
-├── GeometricChannelModel (original, kept for comparison)
+├── (CDL only)
 ├── SionnaCDLChannelModel (new, 3GPP TR 38.901)
 │   ├── __init__: Setup CDL instances for each profile
 │   ├── generate_channel: Domain randomization + channel sampling
@@ -95,7 +101,7 @@ train.py
 └── Training loop: Domain randomization across all parameters
 
 config.py
-├── USE_SIONNA_CDL: Enable/disable Sionna
+├── (flag removed) Sionna CDL always on
 ├── CDL_MODELS: List of profiles to use
 ├── DELAY_SPREAD_RANGE: Multipath randomization range
 ├── UE_SPEED_RANGE: Mobility randomization range
@@ -115,15 +121,12 @@ For each training batch, we randomly sample:
 1. **CDL Profile** (CDL-A/B/C/D/E)
    - Exposes model to LOS, NLOS, different delay spreads
    - Prevents overfitting to specific propagation scenario
-   
 2. **Delay Spread** (10-300 ns)
    - Varies multipath severity
    - Trains on both rich and sparse scattering environments
-   
 3. **UE Speed** (0-30 m/s)
    - Introduces varying Doppler effects
    - Handles both static and mobile users
-   
 4. **SNR** (-5 to 20 dB)
    - Trains across noise conditions
    - Robust to power control variations
@@ -131,12 +134,14 @@ For each training batch, we randomly sample:
 ### Why Domain Randomization Works
 
 **Problem without randomization:**
+
 ```
 Train on fixed SNR=10dB, CDL-A → Model overfits
 Test on SNR=5dB, CDL-C → Poor generalization
 ```
 
 **Solution with randomization:**
+
 ```
 Train on random SNR ∈ [-5, 20]dB, random CDL ∈ {A,B,C,D,E}
 → Model learns robust beam selection strategy
@@ -144,6 +149,7 @@ Train on random SNR ∈ [-5, 20]dB, random CDL ∈ {A,B,C,D,E}
 ```
 
 **Mathematical intuition:**
+
 - Training distribution: p_train(SNR, CDL, delay, speed) = Uniform
 - Test distribution: p_test may differ, but is covered by training support
 - Policy π(beam | channel) learns to handle diverse H realizations
@@ -180,6 +186,7 @@ python train.py --scheme C3 --epochs 100
 ### Training with Specific CDL Profiles
 
 Edit `config.py`:
+
 ```python
 # Example: Train only on LOS scenarios
 Config.CDL_MODELS = ["C", "D"]  # CDL-C and CDL-D are LOS
@@ -207,7 +214,7 @@ Config.UE_SPEED_RANGE = (3.0, 3.0)  # Fixed speed
 python train.py --scheme C3
 
 # Train with geometric model (for baseline comparison)
-# Edit config.py: Config.USE_SIONNA_CDL = False
+# Sionna CDL is always enabled (no flag toggle)
 python train.py --scheme C3
 ```
 
@@ -258,12 +265,14 @@ ut_array = sionna.channel.tr38901.Antenna(
 ### Frequency-Flat Channel Assumption
 
 **Why it's valid for beam alignment:**
+
 - Beam codebook design operates on **spatial domain** (array geometry)
 - Sensing measurements are **narrowband received power** |w^H H f|²
 - Training loss is **independent of frequency** (maximizes beamforming gain)
 - 3GPP CDL at single frequency ≈ narrowband channel
 
 **Implementation:**
+
 ```python
 # Sum over all paths to get narrowband channel
 h = cdl(...)  # Shape: [batch, rx, rx_ant, tx, tx_ant, paths, time]
@@ -312,6 +321,7 @@ print(f"Channel dtype: {H.dtype}")  # Should be complex64
 ### Monitor CDL Distribution
 
 Add to training loop:
+
 ```python
 # Log which CDL models are being sampled
 if step % 100 == 0:
@@ -324,10 +334,12 @@ if step % 100 == 0:
 ### Computational Cost
 
 **CDL vs Geometric:**
+
 - Geometric: ~0.1 ms/batch (very fast, pure TensorFlow ops)
 - Sionna CDL: ~1-2 ms/batch (slower due to cluster calculations)
 
 **Impact on training:**
+
 - Geometric: ~2 min/epoch (1024 batch size, 100K samples)
 - Sionna CDL: ~5 min/epoch (same settings)
 
@@ -336,18 +348,21 @@ if step % 100 == 0:
 ### Memory Usage
 
 CDL models store cluster parameters internally. With 5 CDL models:
+
 - Memory overhead: ~100 MB (negligible)
 - Batch size capacity: Same as geometric model
 
 ### Optimization Tips
 
 1. **Precompute clusters** (future work):
+
    ```python
    # Cache cluster delays/angles for each CDL profile
    # Speeds up batch generation by 30%
    ```
 
 2. **Mixed training** (hybrid approach):
+
    ```python
    # First 50 epochs: Geometric (fast warmup)
    # Last 50 epochs: Sionna CDL (realistic fine-tuning)
@@ -361,14 +376,17 @@ CDL models store cluster parameters internally. With 5 CDL models:
 ## References
 
 1. **3GPP TR 38.901**: "Study on channel model for frequencies from 0.5 to 100 GHz"
+
    - Official specification for CDL models
    - https://www.3gpp.org/DynaReport/38901.htm
 
 2. **Sionna Documentation**:
+
    - Channel models: https://nvlabs.github.io/sionna/api/channel.html
    - TR 38.901 CDL: https://nvlabs.github.io/sionna/api/channel.tr38901.html
 
 3. **Domain Randomization Papers**:
+
    - OpenAI et al., "Learning Dexterous In-Hand Manipulation," 2018
    - Tobin et al., "Domain Randomization for Transferring Deep Neural Networks," 2017
 
@@ -381,6 +399,7 @@ CDL models store cluster parameters internally. With 5 CDL models:
 ### Issue: "Sionna not available"
 
 **Solution:**
+
 ```bash
 pip install sionna
 # or
@@ -390,6 +409,7 @@ conda install -c conda-forge sionna
 ### Issue: CDL channel has wrong shape
 
 **Check:**
+
 - `num_tx_antennas` and `num_rx_antennas` match config
 - Sionna version >= 0.17
 - No accidental broadcasting in `generate_channel`
@@ -397,6 +417,7 @@ conda install -c conda-forge sionna
 ### Issue: Training loss doesn't improve
 
 **Possible causes:**
+
 1. SNR range too wide → Reduce to [-5, 15] dB
 2. Too many CDL models → Start with ["A", "C"] only
 3. Learning rate too high → Reduce by 2x
@@ -405,6 +426,7 @@ conda install -c conda-forge sionna
 ### Issue: NaN gradients
 
 **Solution:**
+
 ```python
 # Add gradient clipping (already in train.py)
 gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
@@ -424,6 +446,7 @@ assert not tf.reduce_any(tf.math.is_nan(H))
 ## Summary
 
 The Sionna CDL integration provides:
+
 - ✅ **Realistic 3GPP TR 38.901 channels** (industry standard)
 - ✅ **Domain randomization** across CDL profiles, SNR, delay, speed
 - ✅ **Robust beam alignment** that generalizes across scenarios
@@ -434,4 +457,4 @@ The Sionna CDL integration provides:
 
 ---
 
-*For questions or issues, please refer to Sionna documentation or the implementation in `channel_model.py`.*
+_For questions or issues, please refer to Sionna documentation or the implementation in `channel_model.py`._

@@ -15,7 +15,6 @@ import argparse
 from device_setup import setup_device
 from config import Config
 from models.beam_alignment import BeamAlignmentModel
-from channel_model import GeometricChannelModel
 from metrics import BeamAlignmentMetrics
 from utils import compute_beamforming_gain_db
 
@@ -92,7 +91,6 @@ def generate_figure_4_c1_c2_c3(config, output_dir='./results', num_samples=2000)
         model = BeamAlignmentModel(
             num_tx_antennas=config.NTX,
             num_rx_antennas=config.NRX,
-            num_paths=config.NUM_PATHS,
             codebook_size=config.NCB,
             num_sensing_steps=config.T,
             rnn_hidden_size=config.RNN_HIDDEN_SIZE,
@@ -266,7 +264,6 @@ def generate_figure_5_c2_c3(config, output_dir='./results', num_samples=1000):
         model = BeamAlignmentModel(
             num_tx_antennas=config.NTX,
             num_rx_antennas=config.NRX,
-            num_paths=config.NUM_PATHS,
             codebook_size=config.NCB,
             num_sensing_steps=T_val,  # Use specific T value
             rnn_hidden_size=config.RNN_HIDDEN_SIZE,

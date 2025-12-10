@@ -13,10 +13,9 @@ Configuration Categories:
    - NRX: Number of UE receive antennas (16)
    - Antenna spacing: Half-wavelength (λ/2)
 
-2. Channel Model Parameters:
-   - NUM_PATHS: Number of propagation paths (3)
+2. Channel Model Parameters (Sionna CDL):
    - CARRIER_FREQUENCY: 28 GHz (mmWave band)
-   - Geometric channel model assumptions
+   - 3GPP TR 38.901 CDL profiles (A–E)
 
 3. Beam Alignment Parameters:
    - T: Number of sensing steps (8)
@@ -74,11 +73,7 @@ class Config:
     NTX = 32  # Number of transmit antennas at BS (per arXiv paper)
     NRX = 16  # Number of receive antennas at UE
     
-    # ==================== Channel Model Parameters ====================
-    # Geometric model (legacy - for comparison)
-    NUM_PATHS = 3  # Number of propagation paths (L)
-    
-    # Sionna CDL Channel Model Parameters (3GPP TR 38.901)
+    # ==================== Channel Model Parameters (Sionna CDL only) ====================
     CARRIER_FREQUENCY = 28e9  # 28 GHz (mmWave)
     WAVELENGTH = 3e8 / CARRIER_FREQUENCY  # Speed of light / frequency
     ANTENNA_SPACING = WAVELENGTH / 2  # Half-wavelength spacing for ULA
@@ -91,9 +86,6 @@ class Config:
     RESOURCE_GRID_FFT_SIZE = 64
     RESOURCE_GRID_NUM_OFDM_SYMBOLS = 1
     RESOURCE_GRID_SUBCARRIER_SPACING = 120e3  # Hz
-    
-    # Channel model selection
-    USE_SIONNA_CDL = True  # Set to False to use geometric model
     
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
@@ -124,8 +116,6 @@ class Config:
     C1_CE_LOSS_WEIGHT = 0.1  # Weight for cross-entropy auxiliary loss (paper doesn't specify, using 0.1)
     
     # ==================== Model Architecture ====================
-    # Batch norm can hamper complex-valued beam outputs; disable by default for
-    # cleaner training dynamics. Enable manually if experiments show benefit.
     USE_BATCH_NORM = False
     DROPOUT_RATE = 0.0  # Set to 0.0 to disable dropout
     
@@ -170,9 +160,6 @@ class Config:
         Returns:
             noise_power: Noise power (linear scale)
         """
-        # SNR per antenna: SNR_ant = P_signal / (N_ant * P_noise)
-        # Assuming unit signal power: P_signal = 1
-        # P_noise = 1 / (N_ant * 10^(SNR_db/10))
         snr_linear = 10 ** (snr_db / 10)
         noise_power = 1.0 / (cls.NRX * snr_linear)
         return noise_power
@@ -193,7 +180,6 @@ class Config:
         config_dict = {
             'NTX': cls.NTX,
             'NRX': cls.NRX,
-            'NUM_PATHS': cls.NUM_PATHS,
             'T': T if T is not None else cls.T,
             'NCB': NCB if NCB is not None else cls.NCB,
             'SNR': SNR if SNR is not None else cls.SNR_TRAIN,
@@ -211,15 +197,10 @@ class Config:
         print(f"\nAntenna Arrays:")
         print(f"  BS Transmit Antennas (NTX): {cls.NTX}")
         print(f"  UE Receive Antennas (NRX): {cls.NRX}")
-        print(f"\nChannel:")
-        if cls.USE_SIONNA_CDL:
-            print(f"  Model: Sionna 3GPP TR 38.901 CDL")
-            print(f"  CDL Profiles: {', '.join(['CDL-' + m for m in cls.CDL_MODELS])}")
-            print(f"  Delay Spread: {cls.DELAY_SPREAD_RANGE[0]*1e9:.0f}-{cls.DELAY_SPREAD_RANGE[1]*1e9:.0f} ns")
-            print(f"  UE Speed: {cls.UE_SPEED_RANGE[0]:.0f}-{cls.UE_SPEED_RANGE[1]:.0f} m/s")
-        else:
-            print(f"  Model: Geometric (L paths)")
-            print(f"  Number of Paths (L): {cls.NUM_PATHS}")
+        print(f"\nChannel (Sionna 3GPP TR 38.901 CDL):")
+        print(f"  CDL Profiles: {', '.join(['CDL-' + m for m in cls.CDL_MODELS])}")
+        print(f"  Delay Spread: {cls.DELAY_SPREAD_RANGE[0]*1e9:.0f}-{cls.DELAY_SPREAD_RANGE[1]*1e9:.0f} ns")
+        print(f"  UE Speed: {cls.UE_SPEED_RANGE[0]:.0f}-{cls.UE_SPEED_RANGE[1]:.0f} m/s")
         print(f"  Carrier Frequency: {cls.CARRIER_FREQUENCY/1e9:.0f} GHz")
         print(f"  Wavelength: {cls.WAVELENGTH*1000:.2f} mm")
         print(f"\nBeam Alignment:")

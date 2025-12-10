@@ -1,66 +1,12 @@
 """
-mmWave Geometric Channel Model
+Sionna-based 3GPP TR 38.901 CDL channel model with domain randomization.
 
-This module implements a geometric channel model for millimeter-wave (mmWave)
-communication systems. The model captures the sparse scattering nature of mmWave
-propagation through a limited number of propagation paths.
-
-Channel Model:
-    The channel matrix H ∈ ℂ^{NRX × NTX} is modeled as:
-    
-    H = Σ_{ℓ=1}^L α_ℓ a_RX(φ_ℓ^RX) a_TX^H(φ_ℓ^TX)
-    
-    where:
-    - L: Number of propagation paths (typically 1-5 for mmWave)
-    - α_ℓ ~ CN(0, 1): Complex path gain (Rayleigh fading)
-    - φ_ℓ^RX ~ U[-π/2, π/2]: Angle of Arrival (AoA) at receiver
-    - φ_ℓ^TX ~ U[-π/2, π/2]: Angle of Departure (AoD) at transmitter
-    - a(φ): Array response vector for Uniform Linear Array (ULA)
-
-Array Response Vector:
-    For a ULA with N antennas and spacing d:
-    
-    a(φ) = [1, e^{jπ d sin(φ)}, e^{j2π d sin(φ)}, ..., e^{j(N-1)π d sin(φ)}]^T / √N
-    
-    Standard spacing: d = λ/2 (half-wavelength)
-
-Channel Properties:
-    - Rank: Typically rank-deficient (rank ≤ min(L, NRX, NTX))
-    - Average power: 𝔼[||H||_F^2] ≈ L × NRX × NTX
-    - Sparsity: Dominant paths in angular domain
-    - Block fading: Constant during coherence time
-
-Implementations:
-    1. GeometricChannelModel: Pure geometric model (recommended)
-       - Fast, deterministic, fully controllable
-       - Suitable for beam alignment research
-    
-    2. SionnaChannelModel: Wrapper for Sionna integration (future)
-       - More realistic channel modeling
-       - Includes 3D scenarios, blockage, etc.
-
-Usage Example:
-    >>> from channel_model import GeometricChannelModel
-    >>> 
-    >>> channel_model = GeometricChannelModel(
-    ...     num_tx_antennas=64,
-    ...     num_rx_antennas=16,
-    ...     num_paths=3
-    ... )
-    >>> 
-    >>> # Generate batch of channel realizations
-    >>> H = channel_model.generate_channel(batch_size=100)
-    >>> print(H.shape)  # (100, 16, 64)
-
-References:
-    - Heath et al., "An Overview of Signal Processing Techniques for
-      Millimeter Wave MIMO Systems," IEEE JSAC 2016
-    - Alkhateeb et al., "Deep Learning Coordinated Beamforming for
-      Highly-Mobile Millimeter Wave Systems," IEEE Access 2018
+This module solely uses Sionna's native CDL + OFDM pipeline to generate
+frequency-flat channels for the beam-alignment model. No geometric fallback is
+kept to ensure all training/evaluation rely on the standardized CDL models.
 """
 
 import tensorflow as tf
-import numpy as np
 try:
     import sionna
     # Prefer the newer sionna.phy API, fall back to legacy paths if needed.
@@ -76,110 +22,7 @@ try:
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
-    print("Warning: Sionna not available. Using custom channel model.")
-
-from utils import array_response_vector, random_angles
-
-
-class GeometricChannelModel(tf.keras.layers.Layer):
-    """
-    Geometric mmWave channel model.
-    
-    Implements: H = Σ_{ℓ=1}^L α_ℓ a_RX(φ_ℓ^RX) a_TX^H(φ_ℓ^TX)
-    
-    where:
-    - L is the number of propagation paths
-    - α_ℓ ~ CN(0, 1) is the complex path gain
-    - φ_ℓ^{RX/TX} ~ U[-π/2, π/2] are angle of arrival/departure
-    - a(φ) is the array response vector
-    """
-    
-    def __init__(self, 
-                 num_tx_antennas, 
-                 num_rx_antennas,
-                 num_paths=3,
-                 antenna_spacing=0.5,
-                 normalize_channel=True,
-                 **kwargs):
-        """
-        Args:
-            num_tx_antennas: Number of transmit antennas (NTX)
-            num_rx_antennas: Number of receive antennas (NRX)  
-            num_paths: Number of propagation paths (L)
-            antenna_spacing: Antenna spacing in wavelengths
-            normalize_channel: Whether to normalize channel Frobenius norm
-        """
-        super().__init__(**kwargs)
-        self.num_tx_antennas = num_tx_antennas
-        self.num_rx_antennas = num_rx_antennas
-        self.num_paths = num_paths
-        self.antenna_spacing = antenna_spacing
-        self.normalize_channel = normalize_channel
-    
-    def generate_channel(self, batch_size):
-        """
-        Generate a batch of channel realizations.
-        
-        Args:
-            batch_size: Number of channel samples to generate
-            
-        Returns:
-            Channel tensor of shape (batch_size, num_rx_antennas, num_tx_antennas)
-        """
-        # Initialize channel to zeros
-        H = tf.zeros([batch_size, self.num_rx_antennas, self.num_tx_antennas], 
-                     dtype=tf.complex64)
-        
-        # Generate each path
-        for path_idx in range(self.num_paths):
-            # Complex path gain: α_ℓ ~ CN(0, 1)
-            alpha_real = tf.random.normal([batch_size, 1, 1], mean=0.0, stddev=1.0/np.sqrt(2))
-            alpha_imag = tf.random.normal([batch_size, 1, 1], mean=0.0, stddev=1.0/np.sqrt(2))
-            alpha = tf.complex(alpha_real, alpha_imag)  # (batch, 1, 1)
-            
-            # Angle of arrival (AoA): φ_ℓ^RX ~ U[-π/2, π/2]
-            aoa = random_angles([batch_size])  # (batch,)
-            
-            # Angle of departure (AoD): φ_ℓ^TX ~ U[-π/2, π/2]
-            aod = random_angles([batch_size])  # (batch,)
-            
-            # Array response vectors
-            a_rx = array_response_vector(aoa, self.num_rx_antennas, self.antenna_spacing)  # (batch, nrx)
-            a_tx = array_response_vector(aod, self.num_tx_antennas, self.antenna_spacing)  # (batch, ntx)
-            
-            # Compute outer product: a_rx @ a_tx^H
-            # a_rx: (batch, nrx) -> (batch, nrx, 1)
-            # a_tx: (batch, ntx) -> (batch, 1, ntx) after conj and transpose
-            a_rx_expanded = tf.expand_dims(a_rx, axis=-1)  # (batch, nrx, 1)
-            a_tx_conj = tf.expand_dims(tf.math.conj(a_tx), axis=-2)  # (batch, 1, ntx)
-            
-            path_contribution = alpha * a_rx_expanded * a_tx_conj  # (batch, nrx, ntx)
-            
-            # Add to channel
-            H = H + path_contribution
-        
-        # Note: Channel power is controlled by path gains α_ℓ ~ CN(0, 1)
-        # Average channel power ≈ L (number of paths)
-        # For beamforming, we want to preserve this natural scaling
-        
-        return H
-    
-    def call(self, batch_size):
-        """
-        Call method for Keras Layer API.
-        
-        Args:
-            batch_size: Number of channels to generate (can be a tensor)
-            
-        Returns:
-            Channel tensor
-        """
-        if isinstance(batch_size, tf.Tensor):
-            batch_size = tf.get_static_value(batch_size)
-            if batch_size is None:
-                raise ValueError("batch_size must be known at graph construction time")
-        
-        return self.generate_channel(batch_size)
+    print("Error: Sionna not available. Install with `pip install sionna`.")
 
 
 class SionnaCDLChannelModel(tf.keras.layers.Layer):
@@ -372,47 +215,16 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
         return self.generate_channel(batch_size)
 
 
-# Alias for ease of use - defaults to Sionna if available, otherwise geometric
-mmWaveChannel = SionnaCDLChannelModel if SIONNA_AVAILABLE else GeometricChannelModel
-
-
 if __name__ == "__main__":
-    print("Testing mmWave Channel Model...")
-    print("=" * 60)
-    
-    # Create channel model
-    channel_model = GeometricChannelModel(
-        num_tx_antennas=64,
+    print("Testing Sionna CDL Channel Model...")
+    channel_model = SionnaCDLChannelModel(
+        num_tx_antennas=32,
         num_rx_antennas=16,
-        num_paths=3
+        carrier_frequency=28e9,
+        cdl_models=["A"],
+        delay_spread_range=(30e-9, 30e-9),
+        ue_speed_range=(0.0, 0.0),
     )
-    
-    # Generate channels
-    batch_size = 100
-    H = channel_model.generate_channel(batch_size)
-    
-    print(f"\nChannel tensor shape: {H.shape}")
+    H = channel_model.generate_channel(batch_size=4)
+    print(f"Channel tensor shape: {H.shape}")
     print(f"Channel dtype: {H.dtype}")
-    print(f"Channel mean magnitude: {tf.reduce_mean(tf.abs(H)):.4f}")
-    print(f"Channel Frobenius norm (mean): {tf.reduce_mean(tf.norm(H, axis=(1,2))):.4f}")
-    
-    # Compute channel statistics
-    singular_values = tf.linalg.svd(H, compute_uv=False)
-    print(f"\nChannel condition number (mean): {tf.reduce_mean(singular_values[..., 0] / singular_values[..., -1]):.2f}")
-    print(f"Largest singular value (mean): {tf.reduce_mean(singular_values[..., 0]):.4f}")
-    
-    # Test with different number of paths
-    print("\n" + "=" * 60)
-    print("Testing with different number of paths:")
-    for num_paths in [1, 3, 5, 10]:
-        channel_model_test = GeometricChannelModel(
-            num_tx_antennas=64,
-            num_rx_antennas=16,
-            num_paths=num_paths
-        )
-        H_test = channel_model_test.generate_channel(1000)
-        mean_power = tf.reduce_mean(tf.reduce_sum(tf.abs(H_test) ** 2, axis=(1, 2)))
-        print(f"  L={num_paths:2d}: Mean channel power = {mean_power:.4f}")
-    
-    print("\n" + "=" * 60)
-    print("All tests passed! ✓")

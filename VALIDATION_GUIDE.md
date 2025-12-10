@@ -263,25 +263,16 @@ TRAINING COMPLETE
 
 ```python
 import time
-from channel_model import GeometricChannelModel, SionnaCDLChannelModel
+from channel_model import SionnaCDLChannelModel
 
 batch_size = 1024
 
-# Geometric model
-geo_model = GeometricChannelModel(32, 16, num_paths=3)
-start = time.time()
-for _ in range(100):
-    H = geo_model.generate_channel(batch_size)
-geo_time = (time.time() - start) / 100
-
-# CDL model
 cdl_model = SionnaCDLChannelModel(32, 16, cdl_models=["A", "B", "C", "D", "E"])
 start = time.time()
 for _ in range(100):
     H = cdl_model.generate_channel(batch_size)
 cdl_time = (time.time() - start) / 100
 
-print(f"Geometric: {geo_time*1000:.2f} ms/batch")
 print(f"CDL: {cdl_time*1000:.2f} ms/batch")
 print(f"Ratio: {cdl_time/geo_time:.2f}x")
 ```
@@ -397,17 +388,8 @@ import tensorflow as tf
 from config import Config
 from models.beam_alignment import BeamAlignmentModel
 
-def test_geometric_model():
-    """Test that geometric model still works"""
-    Config.USE_SIONNA_CDL = False
-    model = create_model(Config, scheme='C3')
-    results = model(batch_size=32, snr_db=10.0, training=False)
-    assert results['beamforming_gain'].shape == (32,)
-    print("✓ Geometric model works")
-
 def test_cdl_model():
     """Test that CDL model works"""
-    Config.USE_SIONNA_CDL = True
     model = create_model(Config, scheme='C3')
     results = model(batch_size=32, snr_db=10.0, training=False)
     assert results['beamforming_gain'].shape == (32,)
