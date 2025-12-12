@@ -4,7 +4,7 @@
 
 ✅ **GPU Detection**: Working (Tesla T4 detected)  
 ⚠️ **Training Speed**: Slow (~1.13 it/s with batch size 256)  
-⚠️ **Warning**: Gradient warning for C1 scheme (can be ignored - see explanation below)
+ℹ️ **Note**: Repo is C3-only (no C1/C2 scheme branches)
 
 ## Performance Bottlenecks Identified
 
@@ -47,22 +47,6 @@ Geometric channel generation involves random sampling and array operations.
 **Impact**: Low - happens once per batch.
 
 **Estimated Performance Impact**: 🟢 **Low**
-
-## Gradient Warning Explanation (C1 Scheme)
-
-```
-UserWarning: Gradients do not exist for variables ['beam_alignment_model/feedback_beam_index_logits/kernel', 'beam_alignment_model/feedback_beam_index_logits/bias']
-```
-
-**Why it occurs**: In C1 scheme, `tf.argmax` is used to select beam indices, which is **non-differentiable**. TensorFlow warns that gradients won't flow through this path.
-
-**Is it a problem?**: ❌ **No** - This is expected behavior for C1:
-- The feedback layer still learns through the overall objective
-- The receive beam generation (main learnable part) gets gradients
-- Only the discrete beam selection doesn't get direct gradients
-- This is part of the C1 design (index-based feedback vs vector feedback in C2/C3)
-
-**Should you worry?**: No, unless C1 performance is significantly worse than C2/C3.
 
 ---
 
@@ -167,8 +151,8 @@ print("✅ Mixed precision training enabled (float16)\n")
 ### ✅ Step 2: Try Different Batch Sizes
 ```bash
 # Test various batch sizes
-python train.py --scheme C1 --batch_size 512 --test_mode
-python train.py --scheme C1 --batch_size 2048 --test_mode
+python train.py --batch_size 512 --test_mode
+python train.py --batch_size 2048 --test_mode
 ```
 
 ### ✅ Step 3: Add `@tf.function` to Training Step

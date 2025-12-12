@@ -34,10 +34,6 @@ Configuration Categories:
    - RNN_HIDDEN_SIZE: 384 (for ~500K parameters)
    - NUM_FEEDBACK: 16 feedback values
 
-6. Experiment Variants:
-   - C2: Fixed starting beam from codebook
-   - C3: Random starting beam (used in paper)
-
 Usage:
     As a class with static attributes:
         >>> from config import Config
@@ -90,6 +86,9 @@ class Config:
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
     NCB = 8  # Codebook size at BS (number of beams in learned codebook)
+    # C3 default: random sweep start index i ~ Uniform{0..NCB-1}
+    RANDOM_START = True
+    START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
     
     # ==================== Training Parameters ====================
     BATCH_SIZE = 256  # Reduced to fit ~15 GB VRAM comfortably
@@ -126,9 +125,6 @@ class Config:
     RNN_HIDDEN_SIZE = 384  # Matches paper's ~500K total parameters (was 256)
     NUM_FEEDBACK = 16  # Number of feedback values (NFB) (per arXiv paper)
     
-    # C1 Scheme Parameters
-    C1_CE_LOSS_WEIGHT = 0.1  # Weight for cross-entropy auxiliary loss (paper doesn't specify, using 0.1)
-    
     # ==================== Model Architecture ====================
     USE_BATCH_NORM = False
     DROPOUT_RATE = 0.0  # Set to 0.0 to disable dropout
@@ -145,20 +141,6 @@ class Config:
     
     # ==================== Experiment Settings ====================
     RANDOM_SEED = 42
-    
-    # Experiment variants
-    VARIANTS = {
-        "C2": {  # Fixed starting beam
-            "description": "Fixed starting beam from codebook",
-            "random_start": False,
-            "start_index": 0
-        },
-        "C3": {  # Random starting beam
-            "description": "Random starting beam from codebook",
-            "random_start": True,
-            "start_index": None
-        }
-    }
     
     # ==================== Baseline Configurations ====================
     EXHAUSTIVE_SEARCH_GRID_SIZE = 32  # Grid size for exhaustive search
@@ -220,6 +202,9 @@ class Config:
         print(f"\nBeam Alignment:")
         print(f"  Sensing Steps (T): {cls.T}")
         print(f"  BS Codebook Size (NCB): {cls.NCB}")
+        print(f"  Random sweep start: {cls.RANDOM_START}")
+        if not cls.RANDOM_START:
+            print(f"  Fixed sweep start index: {cls.START_BEAM_INDEX}")
         print(f"\nTraining:")
         print(f"  Batch Size: {cls.BATCH_SIZE}")
         print(f"  Epochs: {cls.EPOCHS}")

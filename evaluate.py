@@ -5,14 +5,14 @@ import argparse
 import os
 from config import Config
 from device_setup import setup_device
-from figures_evaluators.figure4 import generate_figure_4_c1_c2_c3
-from figures_evaluators.figure5 import generate_figure_5_c2_c3
+from figures_evaluators.figure4 import generate_figure_4_cdl_comparison
+from figures_evaluators.figure5 import generate_figure_5_cdl_comparison
 
 
 def main():
     """Main evaluation function."""
     parser = argparse.ArgumentParser(
-        description="Reproduce figures 4 and 5 from the paper (C1/C2/C3 comparisons)"
+        description="Generate Fig. 4/5 style plots comparing CDL variants (C3-only)"
     )
     parser.add_argument(
         "--output_dir", type=str, default="./results", help="Output directory for plots"
@@ -22,7 +22,7 @@ def main():
         type=str,
         default="all",
         choices=["all", "4", "5"],
-        help="Which figure(s) to generate: 4 (C1/C2/C3 vs SNR), 5 (C2/C3 vs T)",
+        help="Which figure(s) to generate: 4 (CDL vs SNR), 5 (CDL vs T)",
     )
     parser.add_argument(
         "--num_samples", type=int, default=2000, help="Number of samples for evaluation"
@@ -37,9 +37,9 @@ def main():
     print("\n" + "=" * 80)
     print("PAPER FIGURE REPRODUCTION")
     print("=" * 80)
-    print("\nGenerating correct figure implementations:")
-    print("  - Figure 4: C1, C2, C3 comparison vs SNR")
-    print("  - Figure 5: C2, C3 comparison vs T (sensing steps)")
+    print("\nGenerating figure-style comparisons (axes preserved):")
+    print("  - Figure 4: CDL variant comparison vs SNR (BF gain + satisfaction)")
+    print("  - Figure 5: CDL variant comparison vs T (BF gain + satisfaction)")
     print("=" * 80)
     Config.print_config()
 
@@ -48,10 +48,10 @@ def main():
 
     # Generate figures
     if args.figure in ["all", "4"]:
-        generate_figure_4_c1_c2_c3(Config, args.output_dir, args.num_samples)
+        generate_figure_4_cdl_comparison(Config, args.output_dir, args.num_samples)
 
     if args.figure in ["all", "5"]:
-        generate_figure_5_c2_c3(Config, args.output_dir, args.num_samples)
+        generate_figure_5_cdl_comparison(Config, args.output_dir, args.num_samples)
 
     print("\n" + "=" * 80)
     print("FIGURE REPRODUCTION COMPLETE")
@@ -59,9 +59,9 @@ def main():
     print(f"Results saved to: {args.output_dir}")
     print("\nGenerated figures:")
     if args.figure in ["all", "4"]:
-        print("  - figure_4_c1_c2_c3.png")
+        print("  - figure_4_cdl_comparison.png")
     if args.figure in ["all", "5"]:
-        print("  - figure_5_c2_c3_performance_vs_T.png")
+        print("  - figure_5_cdl_comparison_vs_T.png")
 
 
 if __name__ == "__main__":

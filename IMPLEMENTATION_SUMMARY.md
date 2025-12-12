@@ -120,21 +120,18 @@ self.channel_model = SionnaCDLChannelModel(
 - Updated `create_model()` to pass CDL parameters
 - Updated training loop to sample random SNR per batch
 - Updated `train_step` docstring to document domain randomization
-- Updated C2/C3 loss call to use `Config.LOSS_TYPE` (paper objective by default)
+- Updated loss call to use `Config.LOSS_TYPE` (paper objective by default)
+- Removed C1/C2 scheme branching (C3-only)
 
 **Before:**
 ```python
-loss, bf_gain_db, grad_norm, ce_loss = train_step(
-    model, optimizer, config.BATCH_SIZE, config.SNR_TRAIN, scheme=scheme
-)
+loss, bf_gain_db, grad_norm, ce_loss = train_step(...)
 ```
 
 **After:**
 ```python
 snr_db = sample_snr(config)  # Random SNR per batch
-loss, bf_gain_db, grad_norm, ce_loss = train_step(
-    model, optimizer, config.BATCH_SIZE, snr_db, scheme=scheme
-)
+loss, bf_gain_db, grad_norm = train_step(model, optimizer, config.BATCH_SIZE, snr_db)
 ```
 
 ### 5. New Documentation Files ✅
@@ -149,7 +146,7 @@ loss, bf_gain_db, grad_norm, ce_loss = train_step(
 ✅ **N2 (BS FNN Controller):** Zero changes  
 ✅ **N3 (Learnable Codebook):** Zero changes  
 ✅ **Loss functions:** Updated only to restore the paper objective; no architectural changes  
-✅ **Training schemes (C1/C2/C3):** Zero changes  
+✅ **Training schemes:** Simplified to C3-only (C1/C2 removed)  
 ✅ **Optimizer, learning rate schedule:** Zero changes  
 ✅ **Checkpoint management:** Zero changes  
 ✅ **Beamforming operations:** Zero changes  
@@ -220,7 +217,7 @@ for cluster in clusters:
 ### Basic Training (All CDL Models)
 
 ```bash
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 This automatically:
@@ -285,7 +282,7 @@ Before running full training, verify:
   ```
 - [ ] Test training step:
   ```bash
-  python train.py --test_mode --scheme C3
+  python train.py --test_mode
   ```
 - [ ] Monitor training:
   ```bash
@@ -323,13 +320,12 @@ H = Σ α_ℓ a_rx(φ_ℓ) a_tx^H(φ_ℓ)
 
 1. **Train baseline model:**
    ```bash
-   python train.py --scheme C3 --checkpoint_dir ./checkpoints_cdl --epochs 100
+   python train.py --checkpoint_dir ./checkpoints_cdl --epochs 100
    ```
 
 2. **Evaluate robustness:**
-   - Test on each CDL profile separately
-   - Plot BF gain vs SNR curves
-   - Compare vs geometric baseline
+   - Use `python evaluate.py --figure 4` to compare CDL variants vs SNR
+   - Use `python evaluate.py --figure 5` to compare CDL variants vs T
 
 3. **Paper figures:**
    - Regenerate Figure 4, 5, 6 with CDL channels

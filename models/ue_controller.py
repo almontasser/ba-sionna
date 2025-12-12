@@ -37,7 +37,7 @@ References:
 """
 
 import tensorflow as tf
-from utils import normalize_beam, complex_to_real_vector, real_to_complex_vector
+from utils import normalize_beam, real_to_complex_vector
 
 
 class UEController(tf.keras.Model):
@@ -57,7 +57,6 @@ class UEController(tf.keras.Model):
                  rnn_type="GRU",
                  num_feedback=4,
                  codebook_size=8,
-                 scheme='C3',
                  **kwargs):
         """
         Args:
@@ -66,7 +65,6 @@ class UEController(tf.keras.Model):
             rnn_type: Type of RNN ("GRU" or "LSTM")
             num_feedback: Number of real-valued feedback values (NFB)
             codebook_size: BS codebook size for beam index normalization
-            scheme: Training scheme ('C1', 'C2', or 'C3')
         """
         super().__init__(**kwargs)
         self.num_antennas = num_antennas
@@ -74,7 +72,6 @@ class UEController(tf.keras.Model):
         self.rnn_type = rnn_type
         self.num_feedback = num_feedback
         self.codebook_size = codebook_size
-        self.scheme = scheme
         
         # RNN layer - 2 layers as specified in paper
         if rnn_type == "GRU":
@@ -116,23 +113,12 @@ class UEController(tf.keras.Model):
             name='beam_output'
         )
         
-        # Feedback generation - scheme dependent
-        # C1: Output beam index (NCB logits → argmax)
-        # C2/C3: Output feedback vector (NFB values)
-        if scheme == 'C1':
-            # For C1: output logits over beam indices
-            self.feedback_output = tf.keras.layers.Dense(
-                codebook_size,  # NCB dimensional logits
-                activation=None,
-                name='feedback_beam_index_logits'
-            )
-        else:  # C2 or C3
-            # For C2/C3: output feedback vector
-            self.feedback_output = tf.keras.layers.Dense(
-                num_feedback,
-                activation=None,
-                name='feedback_output'
-            )
+        # Feedback generation (C3): output real feedback vector (NFB values)
+        self.feedback_output = tf.keras.layers.Dense(
+            num_feedback,
+            activation=None,
+            name='feedback_output'
+        )
     
     def get_initial_state(self, batch_size):
         """
@@ -170,9 +156,8 @@ class UEController(tf.keras.Model):
             
         Returns:
             combining_vector: Receive beam w_t, shape (batch, num_antennas)
-            feedback: Feedback values, shape (batch, num_feedback) or (batch, 1) for C1
+            feedback: Feedback vector m_t, shape (batch, num_feedback)
             new_state: Updated RNN state
-            feedback_logits: For C1 only, beam logits (batch, ncb); None for C2/C3
         """
         batch_size = tf.shape(received_signal)[0]
         
@@ -213,22 +198,10 @@ class UEController(tf.keras.Model):
         # Normalize beam
         combining_vector = normalize_beam(combining_vector)
         
-        # Generate feedback (scheme-dependent)
-        feedback_logits = None  # Only used for C1
-        if self.scheme == 'C1':
-            # C1: Generate beam index from logits
-            beam_logits = self.feedback_output(rnn_output)  # (batch, NCB)
-            # Convert to beam index (will be used by BS to pick from codebook)
-            # Note: tf.argmax is non-differentiable, but this is expected for C1
-            # The cross-entropy loss will train this layer despite the argmax
-            feedback = tf.cast(tf.argmax(beam_logits, axis=-1), tf.float32)  # (batch,)
-            feedback = tf.expand_dims(feedback, -1)  # (batch, 1) for consistency
-            feedback_logits = beam_logits  # Return logits for CE loss computation
-        else:  # C2 or C3
-            # C2/C3: Generate feedback vector
-            feedback = self.feedback_output(rnn_output)  # (batch, NFB)
-        
-        return combining_vector, feedback, new_states, feedback_logits
+        # Generate feedback vector m_t
+        feedback = self.feedback_output(rnn_output)  # (batch, NFB)
+
+        return combining_vector, feedback, new_states
     
     def call(self, received_signals, beam_indices, initial_state=None):
         """

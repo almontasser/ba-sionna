@@ -5,9 +5,9 @@ This module implements a complete deep learning-based beam alignment system for
 mmWave communication, integrating three main components:
 1. Base Station (BS) Controller: Manages transmit beamforming with learned codebook
 2. User Equipment (UE) Controller: Adaptively selects receive beams using RNN
-3. Channel Model: Generates realistic mmWave geometric channels
+3. Channel Model: Generates standardized 3GPP TR 38.901 CDL channels
 
-System Architecture (Scheme C3):
+System Architecture (C3-only):
     The beam alignment process operates in T+1 phases:
 
     Sensing Phase (t=0 to T-1):
@@ -25,13 +25,6 @@ System Architecture (Scheme C3):
         4. Compute objective: maximize |w_T^H H f_T|^2
 
 Mathematical Model:
-    Channel: H = Σ_{ℓ=1}^L α_ℓ a_RX(φ_ℓ^RX) a_TX^H(φ_ℓ^TX)
-    where:
-        - L: number of propagation paths
-        - α_ℓ ~ CN(0,1): complex path gain
-        - φ_ℓ: angles of arrival/departure
-        - a(φ): array response vector
-
     Beamforming Gain: G = |w^H H f|^2
     Objective: max_{f,w} 𝔼[G / ||H||_F^2]
 
@@ -86,7 +79,6 @@ class BeamAlignmentModel(tf.keras.Model):
         num_feedback=4,
         start_beam_index=0,
         random_start=False,
-        scheme="C3",
         carrier_frequency=28e9,
         cdl_models=None,
         delay_spread_range=(10e-9, 300e-9),
@@ -106,10 +98,6 @@ class BeamAlignmentModel(tf.keras.Model):
             num_feedback: Number of feedback values (NFB)
             start_beam_index: Starting beam index (if not random)
             random_start: Whether to use random starting beam
-            scheme: Training scheme ('C1', 'C2', or 'C3')
-                C1: Only N1 (UE RNN), no N2, fixed codebook
-                C2: N1 + N2 (BS FNN), fixed codebook
-                C3: N1 + N2 + N3 (learnable codebook)
             carrier_frequency: Carrier frequency in Hz (for Sionna CDL)
             cdl_models: List of CDL model names (e.g., ["A", "B", "C", "D", "E"])
             delay_spread_range: (min, max) delay spread for CDL randomization
@@ -125,22 +113,6 @@ class BeamAlignmentModel(tf.keras.Model):
         self.num_sensing_steps = num_sensing_steps
         self.start_beam_index = start_beam_index
         self.random_start = random_start
-        self.scheme = scheme
-
-        # Determine scheme-specific settings
-        if scheme == "C1":
-            use_n2_fnn = False
-            trainable_codebook = False
-        elif scheme == "C2":
-            use_n2_fnn = True
-            trainable_codebook = False  # C2 uses fixed DFT codebook!
-        elif scheme == "C3":
-            use_n2_fnn = True
-            trainable_codebook = True
-        else:
-            raise ValueError(f"Unknown scheme: {scheme}. Must be 'C1', 'C2', or 'C3'")
-
-        self.use_n2_fnn = use_n2_fnn
 
         # Create channel model - Sionna CDL or geometric
         if not SIONNA_AVAILABLE:
@@ -168,7 +140,7 @@ class BeamAlignmentModel(tf.keras.Model):
             num_antennas=num_tx_antennas,
             codebook_size=codebook_size,
             initialize_with_dft=True,
-            trainable_codebook=trainable_codebook,  # Scheme-dependent
+            trainable_codebook=True,  # C3: learnable codebook
         )
 
         self.ue_controller = UEController(
@@ -177,7 +149,6 @@ class BeamAlignmentModel(tf.keras.Model):
             rnn_type=rnn_type,
             num_feedback=num_feedback,
             codebook_size=codebook_size,
-            scheme=scheme,  # Pass scheme to UE controller
         )
 
     def execute_beam_alignment(self, channels, noise_power, training=False):
@@ -196,7 +167,6 @@ class BeamAlignmentModel(tf.keras.Model):
                 - beamforming_gain: Beamforming gains (batch,)
                 - received_signals: All received signals (batch, T)
                 - beam_indices: BS beam indices (batch, T)
-                - feedback_logits: For C1 only, final feedback logits (batch, ncb)
         """
         batch_size = tf.shape(channels)[0]
         T = self.num_sensing_steps
@@ -220,10 +190,6 @@ class BeamAlignmentModel(tf.keras.Model):
         # Lists to store received signals and UE beams
         received_signals_list = []
         rx_beams_list = []
-        final_feedback_logits = None  # Track logits for C1 scheme
-
-        # Process each sensing step
-        final_feedback = None
 
         for t in range(T):
             # Get BS beam for this step
@@ -243,14 +209,7 @@ class BeamAlignmentModel(tf.keras.Model):
                 # Use previous received signal to generate current beam
                 y_prev = received_signals_list[-1]
                 x_prev = beam_indices[:, t - 1]
-                w_t, feedback, ue_state, logits = self.ue_controller.process_step(
-                    y_prev, x_prev, ue_state
-                )
-
-                # Capture feedback and logits at the last sensing step
-                if t == T - 1:
-                    final_feedback = feedback
-                    final_feedback_logits = logits  # Will be None for C2/C3
+                w_t, _, ue_state = self.ue_controller.process_step(y_prev, x_prev, ue_state)
 
             # Compute received signal: y_t = w_t^H @ H @ f_t + noise
             # H @ f_t
@@ -270,38 +229,20 @@ class BeamAlignmentModel(tf.keras.Model):
         rx_beams_sequence = tf.stack(rx_beams_list, axis=1)  # (batch, T, nrx)
 
         # ==================================================================
-        # Final Beamforming Step (t=T) - Scheme Dependent
+        # Final Beamforming Step (t=T)
         # ==================================================================
 
-        # 1. BS generates final beam f_T using feedback from UE
-        # If final_feedback is None (e.g. T=1), get it from the last step
-        if final_feedback is None:
-            # Should not happen if T >= 2 and logic is correct
-            # But for safety, run one more step to get feedback
-            y_prev = received_signals_list[-1]
-            x_prev = beam_indices[:, T - 1]
-            _, final_feedback, ue_state, final_feedback_logits = (
-                self.ue_controller.process_step(y_prev, x_prev, ue_state)
-            )
+        # UE processes the last sensing measurement y_{T-1} to produce:
+        #   w_T = g1(y_{T-1}, x_{T-1}, h_{T-1})
+        #   m_FB = g2(y_{T-1}, x_{T-1}, h_{T-1})
+        y_last = received_signals_list[-1]
+        x_last = beam_indices[:, T - 1]
+        final_rx_beam, final_feedback, _ = self.ue_controller.process_step(
+            y_last, x_last, ue_state
+        )
 
-        # Generate final BS beam based on scheme
-        if self.scheme == "C1":
-            # C1: Feedback is beam index, BS picks from codebook (no N2)
-            beam_idx = tf.cast(tf.squeeze(final_feedback), tf.int32)  # (batch,)
-            final_tx_beam = self.bs_controller.get_beam(beam_idx)  # Codebook lookup
-        else:  # C2 or C3
-            # C2/C3: Feedback is vector, BS uses N2 FNN to generate final beam
-            final_tx_beam = self.bs_controller.get_beam_from_feedback(
-                final_feedback
-            )  # f_T via N2
-
-        # 2. UE generates final combining vector w_T based on all history
-        # It processes the last sensing measurement y_{T-1}
-        y_prev = received_signals_list[-1]
-        x_prev = beam_indices[:, T - 1]
-        final_rx_beam, _, _, _ = self.ue_controller.process_step(
-            y_prev, x_prev, ue_state
-        )  # w_T
+        # BS generates final beam f_T = g3(m_FB)
+        final_tx_beam = self.bs_controller.get_beam_from_feedback(final_feedback)
 
         # 3. Compute final beamforming gain
         # This is the objective function to maximize
@@ -319,10 +260,6 @@ class BeamAlignmentModel(tf.keras.Model):
             "rx_beams_sequence": rx_beams_sequence,
             "feedback": final_feedback,
         }
-
-        # Add feedback_logits for C1 scheme (used for cross-entropy loss)
-        if self.scheme == "C1" and final_feedback_logits is not None:
-            results["feedback_logits"] = final_feedback_logits
 
         return results
 

@@ -81,8 +81,6 @@ model = BeamAlignmentModel(
     rnn_hidden_size=Config.RNN_HIDDEN_SIZE,
     rnn_type=Config.RNN_TYPE,
     num_feedback=Config.NUM_FEEDBACK,
-    scheme='C3',
-    use_sionna_cdl=True,
     carrier_frequency=Config.CARRIER_FREQUENCY,
     cdl_models=Config.CDL_MODELS
 )
@@ -124,21 +122,19 @@ from config import Config
 from train import create_model, train_step
 
 # Create model and optimizer
-model = create_model(Config, scheme='C3')
+model = create_model(Config)
 optimizer = tf.keras.optimizers.Adam(learning_rate=Config.LEARNING_RATE)
 
 # Build model with dummy forward pass
 _ = model(batch_size=32, snr_db=10.0, training=False)
 
 # Initialize optimizer variables
-_ = train_step(model, optimizer, batch_size=16, snr_db=10.0, scheme='C3')
+_ = train_step(model, optimizer, batch_size=16, snr_db=10.0)
 
 # Run several training steps
 print("Running 10 training steps...")
 for i in range(10):
-    loss, bf_gain_db, grad_norm, ce_loss = train_step(
-        model, optimizer, Config.BATCH_SIZE, snr_db=10.0, scheme='C3'
-    )
+    loss, bf_gain_db, grad_norm = train_step(model, optimizer, Config.BATCH_SIZE, snr_db=10.0)
     print(f"Step {i+1}: Loss={loss:.4f}, BF gain={bf_gain_db:.2f} dB, "
           f"Grad norm={grad_norm:.3f}")
 
@@ -204,7 +200,7 @@ print("✓ SNR distribution saved to snr_distribution.png")
 Run a quick 1-epoch training to verify everything works:
 
 ```bash
-python train.py --test_mode --scheme C3
+python train.py --test_mode
 ```
 
 **Expected output:**
@@ -216,12 +212,10 @@ BEAM ALIGNMENT TRAINING
 Device Setup:
 ...
 
-Scheme Configuration: C3 (per arXiv:2401.13587v1 Table I)
+Model Variant: C3-only (full end-to-end)
   - N1 (UE RNN): ✅ Learned
-  - N2 (BS FNN): ✅ Learned  
+  - N2 (BS FNN): ✅ Learned
   - N3 (Codebook): ✅ Learned
-  - Feedback: 16-dim real VECTOR (m_FB)
-  - Loss: Normalized BF gain only
 
 ============================================================
 BEAM ALIGNMENT SYSTEM CONFIGURATION
@@ -301,7 +295,7 @@ process = psutil.Process(os.getpid())
 mem_before = process.memory_info().rss / 1024**2
 
 # Create model
-model = create_model(Config, scheme='C3')
+model = create_model(Config)
 
 # After model creation
 mem_after = process.memory_info().rss / 1024**2
@@ -390,23 +384,22 @@ from models.beam_alignment import BeamAlignmentModel
 
 def test_cdl_model():
     """Test that CDL model works"""
-    model = create_model(Config, scheme='C3')
+    model = create_model(Config)
     results = model(batch_size=32, snr_db=10.0, training=False)
     assert results['beamforming_gain'].shape == (32,)
     print("✓ CDL model works")
 
-def test_schemes():
-    """Test all schemes (C1, C2, C3)"""
-    for scheme in ['C1', 'C2', 'C3']:
-        model = create_model(Config, scheme=scheme)
-        results = model(batch_size=16, snr_db=10.0, training=False)
-        assert results['beamforming_gain'].shape == (16,)
-        print(f"✓ Scheme {scheme} works")
+def test_model():
+    """Basic end-to-end test (C3-only)"""
+    model = create_model(Config)
+    results = model(batch_size=16, snr_db=10.0, training=False)
+    assert results['beamforming_gain'].shape == (16,)
+    print("✓ Model works")
 
 if __name__ == '__main__':
     test_geometric_model()
     test_cdl_model()
-    test_schemes()
+    test_model()
     print("\n✅ All regression tests passed!")
 ```
 
@@ -421,10 +414,10 @@ python test_snr_randomization.py
 python test_regression.py
 
 # If all pass, run test mode training
-python train.py --test_mode --scheme C3
+python train.py --test_mode
 
 # If successful, start full training
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 ## Monitoring During Training

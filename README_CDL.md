@@ -120,13 +120,13 @@ python -c "import sionna; print(sionna.__version__)"
 
 ```bash
 # Train with ALL CDL models (recommended)
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 This automatically uses:
-- Random CDL profile per batch (A/B/C/D/E)
+- Random CDL profile per sample (A/B/C/D/E)
 - Random SNR per batch (-5 to 20 dB)
-- Random delay spread per batch (10-300 ns)
+- Random delay spread per sample (10-300 ns)
 - Random UE speed per batch (0-30 m/s)
 
 ### Monitor Training
@@ -139,7 +139,7 @@ tensorboard --logdir ./logs
 
 ```bash
 # 1 epoch, reduced dataset
-python train.py --test_mode --scheme C3
+python train.py --test_mode
 ```
 
 ## 📊 Expected Results
@@ -230,7 +230,7 @@ Before full training:
 - [ ] Test channel generation (see `VALIDATION_GUIDE.md`)
 - [ ] Test model creation
 - [ ] Test training step
-- [ ] Run test mode: `python train.py --test_mode --scheme C3`
+- [ ] Run test mode: `python train.py --test_mode`
 - [ ] Monitor with TensorBoard: `tensorboard --logdir ./logs`
 
 ## 🔧 Troubleshooting
@@ -249,8 +249,7 @@ pip install sionna
 - Tighten SNR range: `Config.SNR_TRAIN_RANGE = (0.0, 15.0)`
 
 ### Low BF gain after training
-- Verify scheme is C3 (not C1 or C2)
-- Check N1/N2/N3 are all enabled
+- Check N1/N2/N3 are all enabled (C3-only)
 - Increase training time (more epochs)
 
 ## 📚 Documentation Reference
@@ -293,7 +292,7 @@ pip install sionna
 ✅ **N2 (BS FNN)** - Unchanged  
 ✅ **N3 (Learnable Codebook)** - Unchanged  
 ✅ **Loss functions** - Unchanged  
-✅ **Training schemes (C1/C2/C3)** - Unchanged  
+✅ **Training schemes** - Simplified to C3-only  
 ✅ **Optimizer** - Unchanged  
 ✅ **Learning rate schedule** - Unchanged  
 ✅ **Checkpoint management** - Unchanged  
@@ -313,12 +312,10 @@ After 100 epochs of training:
 
 ## 📈 Next Steps
 
-1. **Validate:** Run `python train.py --test_mode --scheme C3`
-2. **Train:** Run `python train.py --scheme C3 --epochs 100`
-3. **Evaluate:** Test on each CDL profile separately
-4. **Compare:** Geometric baseline vs CDL-trained model
-5. **Analyze:** Plot BF gain vs SNR, satisfaction probability
-6. **Publish:** Generate paper figures showing robustness
+1. **Validate:** Run `python train.py --test_mode`
+2. **Train:** Run `python train.py --epochs 100`
+3. **Evaluate:** Run `python evaluate.py --figure 4` (CDL vs SNR) and `python evaluate.py --figure 5` (CDL vs T)
+4. **Analyze:** Report BF gain + satisfaction probability (paper metrics)
 
 ## 🔗 Quick Links
 
@@ -356,7 +353,7 @@ The trained model will be **robust** and **generalizable** to real-world mmWave 
 **Ready to train!** 🚀
 
 ```bash
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 ---

@@ -174,12 +174,12 @@ Based on domain randomization literature (e.g., OpenAI Dactyl, Google QT-Opt):
 
 ```bash
 # Train with full domain randomization (all CDL profiles, randomized SNR)
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 
 # The model automatically uses:
-# - CDL-A, CDL-B, CDL-C, CDL-D, CDL-E (random per batch)
+# - CDL-A, CDL-B, CDL-C, CDL-D, CDL-E (random per sample)
 # - SNR: -5 to 20 dB (random per batch)
-# - Delay spread: 10-300 ns (random per batch)
+# - Delay spread: 10-300 ns (random per sample)
 # - UE speed: 0-30 m/s (random per batch)
 ```
 
@@ -211,11 +211,10 @@ Config.UE_SPEED_RANGE = (3.0, 3.0)  # Fixed speed
 
 ```bash
 # Train with Sionna CDL (recommended)
-python train.py --scheme C3
+python train.py
 
 # Train with geometric model (for baseline comparison)
-# Sionna CDL is always enabled (no flag toggle)
-python train.py --scheme C3
+# NOTE: Geometric baseline was removed in this repo; CDL is always enabled.
 ```
 
 ## Technical Details

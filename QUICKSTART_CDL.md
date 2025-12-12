@@ -22,13 +22,13 @@ python -c "import tensorflow as tf; print(tf.__version__)"
 Train on ALL 5 CDL profiles with domain randomization:
 
 ```bash
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 This automatically uses:
-- **CDL Profiles:** CDL-A, CDL-B, CDL-C, CDL-D, CDL-E (randomly selected per batch)
+- **CDL Profiles:** CDL-A, CDL-B, CDL-C, CDL-D, CDL-E (randomly selected per sample)
 - **SNR:** -5 to 20 dB (randomly sampled per batch)
-- **Delay Spread:** 10-300 ns (random per batch)
+- **Delay Spread:** 10-300 ns (random per sample)
 - **UE Speed:** 0-30 m/s (random per batch)
 
 ### Monitor Training
@@ -86,34 +86,13 @@ Config.DELAY_SPREAD_RANGE = (50e-9, 150e-9)
 Config.UE_SPEED_RANGE = (0.0, 3.0)  # 0-3 m/s
 ```
 
-## Training Schemes
+## Model Variant
 
-### Scheme C1: UE RNN Only
-```bash
-python train.py --scheme C1 --epochs 100
-```
-- N1 (UE RNN): ✅ Learned
-- N2 (BS FNN): ❌ Not used
-- N3 (Codebook): ❌ Fixed DFT
-- Feedback: Beam index (cross-entropy loss)
-
-### Scheme C2: UE RNN + BS FNN
-```bash
-python train.py --scheme C2 --epochs 100
-```
-- N1 (UE RNN): ✅ Learned
-- N2 (BS FNN): ✅ Learned
-- N3 (Codebook): ❌ Fixed DFT
-- Feedback: 16-dim vector
-
-### Scheme C3: Full System (Recommended)
-```bash
-python train.py --scheme C3 --epochs 100
-```
+This repository is **C3-only** (full end-to-end model):
 - N1 (UE RNN): ✅ Learned
 - N2 (BS FNN): ✅ Learned
 - N3 (Codebook): ✅ Learned
-- Feedback: 16-dim vector
+- Feedback: 16-dim real vector
 
 ## Advanced Usage
 
@@ -122,7 +101,7 @@ python train.py --scheme C3 --epochs 100
 Run a quick test with reduced dataset:
 
 ```bash
-python train.py --test_mode --scheme C3
+python train.py --test_mode
 ```
 
 This uses:
@@ -136,13 +115,13 @@ Vary the number of beam measurements (T):
 
 ```bash
 # T=8 (faster, less overhead)
-python train.py --scheme C3 -T 8
+python train.py -T 8
 
 # T=16 (more measurements, better performance)
-python train.py --scheme C3 -T 16
+python train.py -T 16
 
 # T=32 (maximum information)
-python train.py --scheme C3 -T 32
+python train.py -T 32
 ```
 
 ### Resume from Checkpoint
@@ -151,19 +130,18 @@ Training automatically resumes from the latest checkpoint:
 
 ```bash
 # First run
-python train.py --scheme C3 --checkpoint_dir ./checkpoints_C3_CDL
+python train.py --checkpoint_dir ./checkpoints_C3_CDL
 
 # Kill training (Ctrl+C)
 
 # Resume automatically
-python train.py --scheme C3 --checkpoint_dir ./checkpoints_C3_CDL
+python train.py --checkpoint_dir ./checkpoints_C3_CDL
 ```
 
 ### Custom Hyperparameters
 
 ```bash
 python train.py \
-    --scheme C3 \
     --epochs 200 \
     --batch_size 512 \
     --lr 0.0005 \
@@ -185,24 +163,18 @@ python train.py \
 
 After 100 epochs with domain randomization:
 
-| Scheme | Geometric | CDL (All) | Improvement |
-| ------ | --------- | --------- | ----------- |
-| C1     | 24 dB     | 22 dB     | -2 dB*      |
-| C2     | 26 dB     | 25 dB     | -1 dB*      |
-| C3     | 28 dB     | 27 dB     | -1 dB*      |
+| Model (C3-only) | Geometric | CDL (All) | Difference |
+| -------------- | --------- | --------- | ---------- |
+| End-to-end BA  | 28 dB     | 27 dB     | -1 dB*     |
 
 *Lower mean on training distribution is expected! The key benefit is **robustness**: CDL-trained models maintain high performance across diverse test scenarios, while geometric-trained models degrade significantly when channel conditions change.
 
 ### Generalization Test
 
-To properly evaluate robustness, test on each CDL profile separately:
+To evaluate robustness across CDL variants (paper metrics: BF gain + satisfaction probability):
 
-```python
-# evaluate.py (you'll need to create this)
-for cdl_model in ["A", "B", "C", "D", "E"]:
-    Config.CDL_MODELS = [cdl_model]
-    results = evaluate_model(model, test_batches=50)
-    print(f"CDL-{cdl_model}: {results['mean_bf_gain_db']:.2f} dB")
+```bash
+python evaluate.py --figure 4 --num_samples 2000
 ```
 
 **Expected:** CDL-trained model shows <2 dB variation across profiles, while geometric-trained model shows >5 dB variation.
@@ -279,10 +251,10 @@ After training:
 
 ```bash
 # 1. Train with CDL (all profiles)
-python train.py --scheme C3 --checkpoint_dir ./checkpoints_cdl_all --epochs 100
+python train.py --checkpoint_dir ./checkpoints_cdl_all --epochs 100
 
 # 2. Evaluate
-python evaluate_paper_figures.py --checkpoint_dir ./checkpoints_cdl_all
+python evaluate.py --output_dir ./results --figure all --num_samples 2000
 
 # 3. View results
 tensorboard --logdir ./logs
@@ -292,7 +264,7 @@ tensorboard --logdir ./logs
 
 **Key Command:**
 ```bash
-python train.py --scheme C3 --epochs 100
+python train.py --epochs 100
 ```
 
 This single command trains your beam alignment model on **all 5 CDL profiles** with **domain randomization** across SNR, delay spread, and UE mobility.
