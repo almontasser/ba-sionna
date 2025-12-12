@@ -98,6 +98,19 @@ class Config:
     LEARNING_RATE_DECAY = 0.96
     LEARNING_RATE_DECAY_STEPS = 10  # Decay every 10 epochs
     LR_WARMUP_EPOCHS = 0  # Linear warm-up epochs (0 disables warm-up)
+
+    # Loss configuration
+    # "paper": maximize normalized linear gain (Eq. 7 in paper)
+    # "log": optional surrogate for ablations/stability
+    LOSS_TYPE = "paper"
+
+    # ==================== Narrowband Mapping ====================
+    # How to reduce the CDL CIR/frequency response to a narrowband H used in y_t.
+    # "center": use DC/center-subcarrier (paper-consistent flat fading)
+    # "subcarrier": pick a specific subcarrier index
+    # "mean_cfr": average CFR over all subcarriers (kept for ablations)
+    NARROWBAND_METHOD = "center"
+    NARROWBAND_SUBCARRIER = None  # int index if method=="subcarrier"
     
     # SNR parameters
     SNR_TRAIN = 10.0  # Training SNR in dB (per arXiv paper)

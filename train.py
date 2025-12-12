@@ -204,7 +204,11 @@ def train_step(model, optimizer, batch_size, snr_db, scheme='C3'):
             )
         else:
             # C2/C3: Use standard normalized BF gain loss
-            loss = compute_loss(results['beamforming_gain'], results['channels'], use_log_gain=True)
+            loss = compute_loss(
+                results['beamforming_gain'],
+                results['channels'],
+                loss_type=getattr(Config, "LOSS_TYPE", "paper"),
+            )
             ce_loss = tf.constant(0.0)  # No CE loss for C2/C3
     
     # Compute gradients
@@ -235,7 +239,11 @@ def train_step(model, optimizer, batch_size, snr_db, scheme='C3'):
 def _validate_step(model, batch_size, snr_db):
     """Single validation step (graph-compiled for speed)."""
     results = model(batch_size=batch_size, snr_db=snr_db, training=False)
-    loss = compute_loss(results['beamforming_gain'], results['channels'])
+    loss = compute_loss(
+        results['beamforming_gain'],
+        results['channels'],
+        loss_type=getattr(Config, "LOSS_TYPE", "paper"),
+    )
     
     # Compute beamforming gain in dB for metrics
     bf_gain_db = compute_beamforming_gain_db(

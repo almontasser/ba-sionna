@@ -222,34 +222,47 @@ class ExhaustiveSearchBaseline:
         }
 
 
-def compute_loss(beamforming_gains, channels=None, use_log_gain=True):
+def compute_loss(beamforming_gains, channels=None, loss_type=None, use_log_gain=None):
     """
     Compute training loss.
-    
-    For Sionna CDL the channel power varies significantly across batches; using
-    a log-domain objective stabilizes gradients and aligns with rate-like
-    metrics. Optionally normalizes by channel Frobenius norm (paper objective).
-    
+
+    Paper objective (Eq. 7): L = -E[ |w^H H f|^2 / ||H||_F^2 ].
+    For CDL, normalized gains are already bounded in [0,1]; clipping keeps
+    numerical stability under mixed precision.
+
     Args:
         beamforming_gains: Beamforming gains (batch,) - linear scale |w^H H f|^2
         channels: Channel matrices (batch, nrx, ntx) - optional for normalization
-        use_log_gain: If True, use -E[log(G_normalized)]; else -E[G_normalized]
-        
+        loss_type: "paper" (default) or "log". If None, inferred from use_log_gain.
+        use_log_gain: Backwards-compatibility flag. If set, overrides default
+            loss_type inference (True->"log", False->"paper").
+
     Returns:
         Scalar loss value
     """
+    if loss_type is None:
+        if use_log_gain is None:
+            loss_type = "paper"
+        else:
+            loss_type = "log" if bool(use_log_gain) else "paper"
+
     if channels is not None:
         # Normalize by channel Frobenius norm squared per paper
         channel_norms_squared = tf.reduce_sum(tf.abs(channels) ** 2, axis=(1, 2))  # (batch,)
         normalized_gains = beamforming_gains / (channel_norms_squared + 1e-10)
     else:
         normalized_gains = beamforming_gains
-    
-    if use_log_gain:
+
+    # Clip to valid range to avoid tiny negative/overshoot artifacts
+    normalized_gains = tf.clip_by_value(normalized_gains, 0.0, 1.0)
+
+    if loss_type == "log":
         loss = -tf.reduce_mean(tf.math.log(normalized_gains + 1e-7))
-    else:
+    elif loss_type == "paper":
         loss = -tf.reduce_mean(normalized_gains)
-    
+    else:
+        raise ValueError(f"Unknown loss_type '{loss_type}'. Use 'paper' or 'log'.")
+
     return loss
 
 

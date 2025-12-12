@@ -91,6 +91,8 @@ class BeamAlignmentModel(tf.keras.Model):
         cdl_models=None,
         delay_spread_range=(10e-9, 300e-9),
         ue_speed_range=(0.0, 30.0),
+        narrowband_method=None,
+        narrowband_subcarrier=None,
         **kwargs,
     ):
         """
@@ -112,6 +114,8 @@ class BeamAlignmentModel(tf.keras.Model):
             cdl_models: List of CDL model names (e.g., ["A", "B", "C", "D", "E"])
             delay_spread_range: (min, max) delay spread for CDL randomization
             ue_speed_range: (min, max) UE speed for CDL randomization
+            narrowband_method: Narrowband reduction method for CDL ("center", "subcarrier", "mean_cfr")
+            narrowband_subcarrier: Subcarrier index if narrowband_method=="subcarrier"
         """
         super().__init__(**kwargs)
 
@@ -142,6 +146,10 @@ class BeamAlignmentModel(tf.keras.Model):
         if not SIONNA_AVAILABLE:
             raise ImportError("Sionna must be installed for channel generation.")
         print("  Using Sionna CDL channel model with domain randomization")
+        if narrowband_method is None:
+            narrowband_method = getattr(Config, "NARROWBAND_METHOD", "center")
+        if narrowband_subcarrier is None:
+            narrowband_subcarrier = getattr(Config, "NARROWBAND_SUBCARRIER", None)
         self.channel_model = SionnaCDLChannelModel(
             num_tx_antennas=num_tx_antennas,
             num_rx_antennas=num_rx_antennas,
@@ -152,6 +160,8 @@ class BeamAlignmentModel(tf.keras.Model):
             fft_size=Config.RESOURCE_GRID_FFT_SIZE,
             num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
             subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
+            narrowband_method=narrowband_method,
+            narrowband_subcarrier=narrowband_subcarrier,
         )
 
         self.bs_controller = BSController(

@@ -4,6 +4,26 @@
 
 Successfully integrated **Sionna's 3GPP TR 38.901 CDL channel models** with **domain randomization** into your beam alignment system. The implementation is a drop-in replacement for the geometric channel model while preserving all N1/N2/N3 network architectures and training logic.
 
+## December 2025 Patch: Paper Alignment + Narrowband Fixes
+
+This patch addresses three reviewer‑critical alignment issues:
+
+1. **Loss restored to paper objective (Eq. 7).**  
+   - `compute_loss()` now defaults to the normalized linear gain  
+     \(\mathcal{L}=-\mathbb{E}[|w^H H f|^2/||H||_F^2]\), matching the paper.  
+   - A log‑surrogate is still available for ablations via `Config.LOSS_TYPE="log"`.
+
+2. **Explicit narrowband mapping from CDL.**  
+   - CDL is frequency‑selective; the beam‑alignment model requires a narrowband \(H\).  
+   - We now sample the **CIR** `(h, τ)` from Sionna and form a narrowband channel using one of:
+     - `NARROWBAND_METHOD="center"` (default): DC/center‑subcarrier, paper‑consistent.
+     - `NARROWBAND_METHOD="subcarrier"`: pick `NARROWBAND_SUBCARRIER=k`.
+     - `NARROWBAND_METHOD="mean_cfr"`: complex average over all subcarriers (kept for sensitivity studies).
+
+3. **Per‑sample domain randomization.**  
+   - CDL profile and delay spread are now sampled **per batch element**, not once per batch.  
+   - Because Sionna’s CIR sampler requires scalar delay spread, we sample CIR at a fixed base delay spread and rescale delays per sample before computing the CFR.
+
 ## Files Modified
 
 ### 1. `channel_model.py` ✅
@@ -11,9 +31,9 @@ Successfully integrated **Sionna's 3GPP TR 38.901 CDL channel models** with **do
 **Changes:**
 - Added `SionnaCDLChannelModel` class implementing 3GPP TR 38.901 CDL channels
 - Implements domain randomization across CDL-A/B/C/D/E, delay spread, and UE speed
-- Uses parametric CDL cluster parameters (delays, powers, angles) from standard
-- Constructs channels using existing `array_response_vector` function
-- Maintains same output shape as geometric model: `(batch, num_rx_ant, num_tx_ant)`
+- Uses Sionna’s native **CDL CIR sampler** and maps to a narrowband \(H\)
+- Supports configurable narrowband reduction (`center`, `subcarrier`, `mean_cfr`)
+- Maintains the same output shape as the geometric model: `(batch, num_rx_ant, num_tx_ant)`
 
 **Key Features:**
 ```python
@@ -47,6 +67,8 @@ class SionnaCDLChannelModel:
 - Added `UE_SPEED_RANGE = (0.0, 30.0)` for Doppler effects
 - Added `SNR_TRAIN_RANGE = (-5.0, 20.0)` for SNR randomization
 - Added `SNR_TRAIN_RANDOMIZE = True` to enable SNR domain randomization
+- Added `LOSS_TYPE` (`"paper"` default, `"log"` optional)
+- Added narrowband mapping flags: `NARROWBAND_METHOD`, `NARROWBAND_SUBCARRIER`
 - Updated `print_config()` to display CDL parameters
 
 **Before:**
@@ -98,6 +120,7 @@ self.channel_model = SionnaCDLChannelModel(
 - Updated `create_model()` to pass CDL parameters
 - Updated training loop to sample random SNR per batch
 - Updated `train_step` docstring to document domain randomization
+- Updated C2/C3 loss call to use `Config.LOSS_TYPE` (paper objective by default)
 
 **Before:**
 ```python
@@ -125,7 +148,7 @@ loss, bf_gain_db, grad_norm, ce_loss = train_step(
 ✅ **N1 (UE RNN Controller):** Zero changes  
 ✅ **N2 (BS FNN Controller):** Zero changes  
 ✅ **N3 (Learnable Codebook):** Zero changes  
-✅ **Loss functions:** Zero changes  
+✅ **Loss functions:** Updated only to restore the paper objective; no architectural changes  
 ✅ **Training schemes (C1/C2/C3):** Zero changes  
 ✅ **Optimizer, learning rate schedule:** Zero changes  
 ✅ **Checkpoint management:** Zero changes  
@@ -137,7 +160,7 @@ loss, bf_gain_db, grad_norm, ce_loss = train_step(
 
 ## Domain Randomization Strategy
 
-### Parameters Randomized Per Batch
+### Parameters Randomized Per Sample
 
 | Parameter    | Range           | Impact                          |
 | ------------ | --------------- | ------------------------------- |
@@ -164,21 +187,18 @@ Test: Any CDL, Any SNR → Robust performance within 2 dB of training!
 
 ## Technical Implementation Details
 
-### CDL Channel Construction
+### CDL Channel Construction + Narrowband Mapping
 
-Instead of using Sionna's full OFDM channel simulation (which is complex and slow), we implemented a **simplified parametric approach**:
+We use Sionna’s native TR 38.901 CDL CIR sampler:
 
-1. **Extract 3GPP cluster parameters** (delays, powers, angles) for each CDL profile
-2. **Scale delays** by the desired delay spread
-3. **Normalize powers** and apply K-factor for LOS
-4. **Generate array responses** using existing `array_response_vector` function
-5. **Sum contributions** from all clusters
+1. **Sample CIR** `(h, τ)` from the CDL profile.  
+2. **Rescale delays per sample** to match a randomized delay spread  
+   (Sionna requires scalar delay spread at sampling time).  
+3. **Compute CFR** on the desired subcarrier set:  
+   \(H(f_k)=\sum_p h_p e^{-j2\pi f_k τ_p}\).  
+4. **Reduce to narrowband \(H\)** using `NARROWBAND_METHOD`.
 
-**Result:** Same accuracy as full Sionna simulation, but:
-- ✅ 3-5x faster
-- ✅ Compatible with TensorFlow graph mode
-- ✅ Same interface as geometric model
-- ✅ Full control over dimensions
+This keeps the measurement model narrowband (paper‑consistent) while leveraging realistic clustered delay‑line statistics.
 
 ### Example: CDL-A Channel
 
@@ -204,9 +224,9 @@ python train.py --scheme C3 --epochs 100
 ```
 
 This automatically:
-- Samples random CDL profile per batch
+- Samples random CDL profile per sample
 - Samples random SNR per batch
-- Samples random delay spread per batch
+- Samples random delay spread per sample
 - Trains robust model
 
 ### Disable Sionna (Use Geometric)

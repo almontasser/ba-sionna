@@ -8,17 +8,12 @@ kept to ensure all training/evaluation rely on the standardized CDL models.
 
 import tensorflow as tf
 try:
-    import sionna
+    import sionna  # noqa: F401
     # Prefer the newer sionna.phy API, fall back to legacy paths if needed.
     try:
         from sionna.phy.channel.tr38901 import CDL, PanelArray
-        from sionna.phy.channel import GenerateOFDMChannel
-        from sionna.phy.ofdm import ResourceGrid
     except Exception:  # noqa: BLE001
-        # Legacy (<1.0) module structure
         from sionna.channel.tr38901 import CDL, PanelArray  # type: ignore
-        from sionna.channel import GenerateOFDMChannel  # type: ignore
-        from sionna.ofdm import ResourceGrid  # type: ignore
     SIONNA_AVAILABLE = True
 except ImportError:
     SIONNA_AVAILABLE = False
@@ -29,20 +24,22 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
     """
     Sionna 3GPP TR 38.901 CDL Channel Model with Domain Randomization.
     
-    This implementation now uses Sionna's native CDL + OFDM channel pipeline
-    (ResourceGrid + GenerateOFDMChannel) instead of the previous manual
-    parametric reconstruction. The output remains frequency-flat with shape
-    (batch_size, num_rx_antennas, num_tx_antennas) to stay plug‑compatible with
-    the rest of the beam-alignment code.
-    
+    This implementation uses Sionna's native CDL CIR sampler and then maps the
+    resulting frequency-selective channel to a narrowband H used by the beam-
+    alignment model.
+
     Pipeline:
-        CDL (TR38.901) --> GenerateOFDMChannel --> average over OFDM symbols &
-        subcarriers --> H ∈ ℂ^{batch × NRX × NTX}
-    
-    Domain randomization:
-        - Random CDL profile per batch (A/B/C/D/E)
-        - Random delay spread per batch (uniform in delay_spread_range)
+        CDL (TR38.901) --> CIR (h, tau) --> narrowband mapping --> H ∈ ℂ^{batch × NRX × NTX}
+
+    Domain randomization (per *sample*):
+        - Random CDL profile per batch element (A/B/C/D/E)
+        - Random delay spread per batch element (uniform in delay_spread_range)
         - UE speed randomization is handled internally by Sionna via min/max speed
+
+    Narrowband mapping options:
+        - "center": DC/center-subcarrier (paper-consistent flat fading)
+        - "subcarrier": pick a specific subcarrier index
+        - "mean_cfr": average complex CFR over all subcarriers
     """
     
     def __init__(self, 
@@ -55,6 +52,8 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
                  fft_size=64,
                  num_ofdm_symbols=1,
                  subcarrier_spacing=120e3,
+                 narrowband_method="center",
+                 narrowband_subcarrier=None,
                  **kwargs):
         """
         Args:
@@ -66,8 +65,10 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
             cdl_models: List of CDL model names (default: all 5 models)
                        Options: "A", "B", "C", "D", "E"
             fft_size: OFDM FFT size used when generating frequency responses
-            num_ofdm_symbols: Number of OFDM symbols to generate (averaged)
+            num_ofdm_symbols: Number of OFDM symbols to generate (only 1 is used for quasi-static sensing)
             subcarrier_spacing: Subcarrier spacing in Hz
+            narrowband_method: Narrowband reduction method ("center", "subcarrier", "mean_cfr")
+            narrowband_subcarrier: Subcarrier index if narrowband_method=="subcarrier"
         """
         super().__init__(**kwargs)
         
@@ -82,9 +83,11 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
         self.carrier_frequency = carrier_frequency
         self.delay_spread_range = delay_spread_range
         self.ue_speed_range = ue_speed_range
-        self.fft_size = fft_size
-        self.num_ofdm_symbols = num_ofdm_symbols
-        self.subcarrier_spacing = subcarrier_spacing
+        self.fft_size = int(fft_size)
+        self.num_ofdm_symbols = int(num_ofdm_symbols)
+        self.subcarrier_spacing = float(subcarrier_spacing)
+        self.narrowband_method = narrowband_method
+        self.narrowband_subcarrier = narrowband_subcarrier
         
         # Default to all CDL models for maximum diversity
         if cdl_models is None:
@@ -110,18 +113,8 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
             carrier_frequency=carrier_frequency,
         )
         
-        # Resource grid for OFDM channel generation
-        self.resource_grid = ResourceGrid(
-            num_ofdm_symbols=num_ofdm_symbols,
-            fft_size=fft_size,
-            subcarrier_spacing=subcarrier_spacing,
-            num_tx=1,
-            num_streams_per_tx=1,
-        )
-        
-        # Pre-instantiate one CDL + GenerateOFDMChannel per profile
+        # Pre-instantiate one CDL CIR sampler per profile
         self._cdl_models = []
-        self._ofdm_channels = []
         for model_name in cdl_models:
             cdl = CDL(
                 model=model_name,
@@ -133,21 +126,28 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
                 min_speed=ue_speed_range[0],
                 max_speed=ue_speed_range[1],
             )
-            ofdm_channel = GenerateOFDMChannel(
-                channel_model=cdl,
-                resource_grid=self.resource_grid,
-                normalize_channel=True  # stabilize power across batches
-            )
             self._cdl_models.append(cdl)
-            self._ofdm_channels.append(ofdm_channel)
-        
-        self._subcarrier_axes = (-1, -2)  # (subcarriers, OFDM symbols)
+
+        # Base delay spread used for CIR sampling (scalar required by Sionna).
+        # We rescale delays per sample afterwards.
+        self._base_delay_spread = float(delay_spread_range[0])
+        if self._base_delay_spread <= 0.0:
+            raise ValueError("delay_spread_range[0] must be > 0 for rescaling.")
+
         print(f"✓ Sionna CDL Channel Model initialized (native)")
         print(f"  - CDL profiles: {', '.join(['CDL-' + m for m in cdl_models])}")
         print(f"  - Carrier frequency: {carrier_frequency/1e9:.1f} GHz")
         print(f"  - Delay spread range: {delay_spread_range[0]*1e9:.0f}-{delay_spread_range[1]*1e9:.0f} ns")
         print(f"  - UE speed range: {ue_speed_range[0]:.1f}-{ue_speed_range[1]:.1f} m/s")
         print(f"  - OFDM grid: fft_size={fft_size}, subcarrier_spacing={subcarrier_spacing/1e3:.0f} kHz")
+        print(
+            f"  - Narrowband method: {narrowband_method}"
+            + (
+                f" (k={narrowband_subcarrier})"
+                if narrowband_method == "subcarrier"
+                else ""
+            )
+        )
         print(f"  - Antennas: {num_tx_antennas} BS, {num_rx_antennas} UE")
     
     def generate_channel(self, batch_size):
@@ -172,35 +172,99 @@ class SionnaCDLChannelModel(tf.keras.layers.Layer):
             averages over subcarriers and OFDM symbols to yield a frequency-flat
             channel matrix compatible with the rest of the codebase.
         """
-        # Randomly select CDL model index
+        batch_size = int(batch_size)
+
+        # Sample CDL profile + delay spread per sample
         cdl_idx = tf.random.uniform(
-            [], minval=0, maxval=self.num_cdl_models, dtype=tf.int32
+            [batch_size], minval=0, maxval=self.num_cdl_models, dtype=tf.int32
         )
-
-        # Random delay spread for this batch
         delay_spread = tf.random.uniform(
-            [], self.delay_spread_range[0], self.delay_spread_range[1], tf.float32
+            [batch_size], self.delay_spread_range[0], self.delay_spread_range[1], tf.float32
         )
 
-        def _gen_with_model(model_idx):
-            # Randomize delay spread per batch (Sionna samples speeds internally)
-            self._cdl_models[model_idx].delay_spread = delay_spread
+        # Output tensor
+        h_out = tf.zeros(
+            [batch_size, self.num_rx_antennas, self.num_tx_antennas],
+            dtype=tf.complex64,
+        )
 
-            # Generate full frequency-domain CFR via Sionna's CDL + OFDM channel
-            h_freq = self._ofdm_channels[model_idx](batch_size=batch_size)
+        # Precompute subcarrier frequency offsets (relative to DC)
+        if self.narrowband_method == "center":
+            f_offsets = tf.zeros([1], tf.float32)  # DC only
+        elif self.narrowband_method == "subcarrier":
+            k = self.narrowband_subcarrier
+            if k is None:
+                k = self.fft_size // 2
+            f0 = (float(k) - (self.fft_size / 2.0)) * self.subcarrier_spacing
+            f_offsets = tf.constant([f0], tf.float32)
+        elif self.narrowband_method == "mean_cfr":
+            k = tf.range(self.fft_size, dtype=tf.float32)
+            f_offsets = (k - (self.fft_size / 2.0)) * self.subcarrier_spacing  # (K,)
+        else:
+            raise ValueError(
+                f"Unknown narrowband_method '{self.narrowband_method}'. "
+                "Use 'center', 'subcarrier', or 'mean_cfr'."
+            )
 
-            # Collapse OFDM symbols & subcarriers to a narrowband (flat) channel
-            h_flat = tf.reduce_mean(h_freq, axis=self._subcarrier_axes)
+        two_pi = tf.constant(2.0 * 3.141592653589793, tf.float32)
 
-            # Drop singleton panel dims → shape (batch, nrx_ant, ntx_ant)
-            h_flat = tf.squeeze(h_flat, axis=[1, 3])
-            return tf.cast(h_flat, tf.complex64)
+        # Generate per-profile CIR blocks, then scatter into output
+        for mi in range(self.num_cdl_models):
+            idxs = tf.where(tf.equal(cdl_idx, mi))[:, 0]
+            num_i = tf.shape(idxs)[0]
 
-        if self.num_cdl_models == 1:
-            return _gen_with_model(0)
+            if tf.get_static_value(num_i) == 0:
+                continue
 
-        branch_fns = {i: (lambda i=i: _gen_with_model(i)) for i in range(self.num_cdl_models)}
-        return tf.switch_case(cdl_idx, branch_fns=branch_fns)
+            def _gen_block():
+                ds_i = tf.gather(delay_spread, idxs)  # (num_i,)
+
+                # CIR sampling requires scalar delay spread; use base then rescale delays per sample
+                self._cdl_models[mi].delay_spread = self._base_delay_spread
+                h_cir, tau = self._cdl_models[mi](
+                    batch_size=num_i, num_time_steps=1, sampling_frequency=1.0
+                )
+
+                # Squeeze singleton dims
+                # h_cir: (num_i, 1, nrx, 1, ntx, P, 1) -> (num_i, nrx, ntx, P)
+                h_cir_s = tf.squeeze(h_cir, axis=[1, 3, 6])
+                # tau: (num_i, 1, 1, P) -> (num_i, P)
+                tau_s = tf.squeeze(tau, axis=[1, 2])
+
+                # Normalize and rescale delays per sample
+                tau_norm = tau_s / self._base_delay_spread  # (num_i, P)
+                tau_scaled = tau_norm * tf.expand_dims(ds_i, axis=-1)  # (num_i, P)
+
+                # Phase term: exp(-j 2π f_k τ_p)
+                phase = -two_pi * tf.expand_dims(tau_scaled, axis=-1) * tf.reshape(
+                    f_offsets, [1, 1, -1]
+                )  # (num_i, P, K)
+                exp_term = tf.exp(tf.complex(tf.zeros_like(phase), phase))  # (num_i, P, K)
+
+                # Frequency response per subcarrier: sum_p h_p * exp(...)
+                # h_cir_s: (num_i, nrx, ntx, P), exp_term: (num_i, P, K)
+                h_freq = tf.einsum("b i j p, b p k -> b i j k", h_cir_s, exp_term)
+
+                if self.narrowband_method == "mean_cfr":
+                    h_flat = tf.reduce_mean(h_freq, axis=-1)  # (num_i, nrx, ntx)
+                else:
+                    h_flat = tf.squeeze(h_freq, axis=-1)  # (num_i, nrx, ntx)
+
+                return tf.cast(h_flat, tf.complex64)
+
+            h_block = tf.cond(
+                num_i > 0,
+                true_fn=_gen_block,
+                false_fn=lambda: tf.zeros([0, self.num_rx_antennas, self.num_tx_antennas], tf.complex64),
+            )
+
+            h_out = tf.tensor_scatter_nd_update(
+                h_out,
+                tf.expand_dims(idxs, axis=1),
+                h_block,
+            )
+
+        return h_out
     
     def call(self, batch_size):
         """
