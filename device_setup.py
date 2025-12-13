@@ -24,23 +24,19 @@ def setup_device(verbose=True):
     device_name = "CPU"
     device_string = "/CPU:0"
 
-    def get_available_devices():
-        local_device_protos = device_lib.list_local_devices()
-        return [x.name for x in local_device_protos]
-
     # CRITICAL: Configure GPU memory growth BEFORE any GPU operations
     # This must be done before ANY TensorFlow operation that would initialize the GPU
-    gpus = get_available_devices()
-    if gpus:
+    physical_gpus = tf.config.list_physical_devices("GPU")
+    if physical_gpus:
         try:
             # Enable memory growth to avoid OOM errors
             # MUST be set before GPU is initialized
-            for gpu in gpus:
+            for gpu in physical_gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
 
             if verbose:
-                print(f"✓ Configured memory growth for {len(gpus)} GPU(s)")
-        except RuntimeError as e:
+                print(f"✓ Configured memory growth for {len(physical_gpus)} GPU(s)")
+        except (RuntimeError, ValueError) as e:
             if verbose:
                 print(f"⚠ GPU memory configuration error: {e}")
                 print(f"  (GPU may have been initialized already)")
@@ -53,6 +49,7 @@ def setup_device(verbose=True):
             # Try to set up MPS
             try:
                 # Attempt to create a small tensor on MPS to test if it works
+                # Only attempt if TF reports a GPU device.
                 with tf.device("/GPU:0"):
                     test_tensor = tf.constant([1.0, 2.0, 3.0])
                     _ = test_tensor + test_tensor
@@ -73,12 +70,12 @@ def setup_device(verbose=True):
             print(f"  MPS detection error: {e}")
 
     # Check for CUDA GPU (NVIDIA)
-    # gpus was already retrieved above before any initialization
-    if gpus and device_name == "CPU":
+    # physical_gpus was already retrieved above before any initialization
+    if physical_gpus and device_name == "CPU":
         try:
             # Check if it's a CUDA GPU
             try:
-                gpu_details = tf.config.experimental.get_device_details(gpus[0])
+                gpu_details = tf.config.experimental.get_device_details(physical_gpus[0])
                 if "device_name" in gpu_details:
                     device_name = "CUDA GPU"
                     device_string = "/GPU:0"
@@ -86,14 +83,14 @@ def setup_device(verbose=True):
                         print(
                             f"✓ CUDA GPU detected: {gpu_details.get('device_name', 'Unknown')}"
                         )
-                        print(f"  Number of GPUs: {len(gpus)}")
+                        print(f"  Number of GPUs: {len(physical_gpus)}")
             except:
                 # Might be MPS showing up as GPU
                 device_name = "CUDA GPU"
                 device_string = "/GPU:0"
                 if verbose:
                     print(f"✓ GPU detected")
-                    print(f"  Number of GPUs: {len(gpus)}")
+                    print(f"  Number of GPUs: {len(physical_gpus)}")
         except RuntimeError as e:
             if verbose:
                 print(f"GPU configuration error: {e}")
