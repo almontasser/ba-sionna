@@ -18,7 +18,7 @@ Key Components:
     3. Feedback Processing Network (N2): Feed-forward neural network
        - Input: UE feedback message m_FB (NFB real values)
        - Output: Final transmit beam f_T (NTX complex values)
-       - Architecture: 2-3 fully connected layers with ReLU activation
+       - Architecture: 2-3 fully connected layers (activation + optional LayerNorm, configurable)
        - Enables BS to refine beam based on UE's learned channel knowledge
 
 Operation Modes:
@@ -57,6 +57,9 @@ class BSController(tf.keras.layers.Layer):
                  codebook_size,
                  initialize_with_dft=True,
                  trainable_codebook=True,
+                 fnn_hidden_sizes=(256, 256),
+                 fnn_activation="gelu",
+                 fnn_layer_norm=True,
                  **kwargs):
         """
         Args:
@@ -70,6 +73,9 @@ class BSController(tf.keras.layers.Layer):
         self.codebook_size = codebook_size
         self.initialize_with_dft = initialize_with_dft
         self.trainable_codebook = trainable_codebook
+        self.fnn_hidden_sizes = tuple(int(x) for x in fnn_hidden_sizes)
+        self.fnn_activation = str(fnn_activation)
+        self.fnn_layer_norm = bool(fnn_layer_norm)
 
     def build(self, input_shape=None):
         """Build method to properly register variables with Keras"""
@@ -109,14 +115,26 @@ class BSController(tf.keras.layers.Layer):
         # N2: FNN to map feedback to final beam (per paper)
         # Paper: "two to three layers of fully connected DNN"
         # Input: m_FB (NFB) -> Output: f_T (2*NTX)
-        # Slightly wider FNN with normalization for more expressive final beam mapping.
-        self.fnn = tf.keras.Sequential([
-            tf.keras.layers.Dense(256, activation='gelu', name='bs_fnn_1'),
-            tf.keras.layers.LayerNormalization(name='bs_fnn_ln1'),
-            tf.keras.layers.Dense(256, activation='gelu', name='bs_fnn_2'),
-            tf.keras.layers.LayerNormalization(name='bs_fnn_ln2'),
-            tf.keras.layers.Dense(2 * self.num_antennas, activation=None, name='bs_fnn_out')
-        ], name='bs_fnn')
+        #
+        # NOTE: We keep these as explicit layer attributes (and run them manually)
+        # to ensure they are serialized under stable names in TF checkpoints.
+        self._fnn_layers = []
+        for i, width in enumerate(self.fnn_hidden_sizes, start=1):
+            dense = tf.keras.layers.Dense(
+                int(width), activation=self.fnn_activation, name=f"bs_fnn_{i}"
+            )
+            setattr(self, f"bs_fnn_{i}", dense)
+            self._fnn_layers.append(dense)
+            if self.fnn_layer_norm:
+                ln = tf.keras.layers.LayerNormalization(name=f"bs_fnn_ln{i}")
+                setattr(self, f"bs_fnn_ln{i}", ln)
+                self._fnn_layers.append(ln)
+
+        out = tf.keras.layers.Dense(
+            2 * self.num_antennas, activation=None, name="bs_fnn_out"
+        )
+        self.bs_fnn_out = out
+        self._fnn_layers.append(out)
     
     @property
     def codebook(self):
@@ -212,7 +230,10 @@ class BSController(tf.keras.layers.Layer):
             Final beam f_T, shape (batch, num_antennas)
         """
         # Pass through FNN
-        beam_real_imag = self.fnn(feedback)  # (batch, 2*NTX)
+        x = feedback
+        for layer in self._fnn_layers:
+            x = layer(x)
+        beam_real_imag = x  # (batch, 2*NTX)
         
         # Convert to complex
         # Split into real and imag parts

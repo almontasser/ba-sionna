@@ -9,8 +9,11 @@ sensing steps guided by a recurrent neural network.
 This implementation trains the full end-to-end beam alignment pipeline
 (paper "C3" variant): UE RNN + BS FNN + learnable BS codebook.
 
-Key paper parameters (Section IV): NTX=32, NRX=16, L=3 paths, NCB=8, 
-batch_size=256 (tuned for 15 GB VRAM), training SNR=10dB, ~500K parameters, 2-layer GRU
+Key paper-style parameters (Section IV): NTX=32, NRX=16, NCB=8,
+batch_size=256, training SNR=10 dB, 2-layer GRU.
+
+Note: model size is configurable; with the current default config the C3 model
+is ~0.7M parameters (and can be reduced/increased via Config).
 
 Usage:
     Basic training:
@@ -44,7 +47,6 @@ Monitoring:
 """
 
 import tensorflow as tf
-import numpy as np
 import os
 from datetime import datetime
 from tqdm import tqdm
@@ -52,33 +54,9 @@ from tqdm import tqdm
 from device_setup import setup_device, print_device_info
 from config import Config
 from models.beam_alignment import BeamAlignmentModel
-from metrics import BeamAlignmentMetrics, compute_loss
-from utils import compute_beamforming_gain_db
-
-
-def sample_snr(config):
-    """
-    Sample a random SNR value for domain randomization.
-    
-    Args:
-        config: Configuration object with SNR_TRAIN_RANDOMIZE and SNR_TRAIN_RANGE
-        
-    Returns:
-        SNR value in dB (float32 scalar tensor)
-    """
-    if config.SNR_TRAIN_RANDOMIZE:
-        # Sample from uniform distribution over training range
-        snr_db = tf.random.uniform(
-            [], 
-            minval=config.SNR_TRAIN_RANGE[0], 
-            maxval=config.SNR_TRAIN_RANGE[1],
-            dtype=tf.float32
-        )
-    else:
-        # Use fixed training SNR
-        snr_db = tf.constant(config.SNR_TRAIN, dtype=tf.float32)
-    
-    return snr_db
+from checkpoint_utils import check_checkpoint_compatibility
+from training.lr_schedule import WarmupThenDecay
+from training.steps import sample_snr, train_step, validate
 
 
 def create_model(config):
@@ -131,151 +109,6 @@ def create_model(config):
     )
 
     return model
-
-
-
-@tf.function(reduce_retracing=True)
-def train_step(model, optimizer, batch_size, snr_db):
-    """
-    Execute one training step with domain randomization.
-    
-    Args:
-        model: BeamAlignmentModel
-        optimizer: TensorFlow optimizer
-        batch_size: Batch size
-        snr_db: SNR in dB (can be scalar or tensor for randomization)
-    Returns:
-        loss: Total loss
-        beamforming_gain_db: Mean BF gain in dB
-        gradient_norm: Gradient norm
-        
-    Note:
-        Domain randomization is applied via:
-        1. Random scenario selection (UMi/UMa/RMa) and topology sampling
-           (in channel_model.generate_channel)
-        2. Random SNR per batch (if enabled via Config.SNR_TRAIN_RANGE)
-    """
-    def _sanitize_grad(g):
-        if g is None:
-            return None
-        if isinstance(g, tf.IndexedSlices):
-            finite = tf.math.is_finite(g.values)
-            values = tf.where(finite, g.values, tf.zeros_like(g.values))
-            return tf.IndexedSlices(values, g.indices, g.dense_shape)
-        finite = tf.math.is_finite(g)
-        return tf.where(finite, g, tf.zeros_like(g))
-
-    with tf.GradientTape() as tape:
-        results = model(batch_size=batch_size, snr_db=snr_db, training=True)
-        loss = compute_loss(
-            results["beamforming_gain"],
-            results["channels"],
-            loss_type=getattr(Config, "LOSS_TYPE", "paper"),
-        )
-
-    # Compute mean BF gain in dB for logging (even if we end up skipping the update)
-    bf_gain_db = tf.reduce_mean(
-        compute_beamforming_gain_db(
-            results["channels"],
-            results["final_tx_beams"],
-            results["final_rx_beams"],
-        )
-    )
-
-    loss_finite = tf.math.is_finite(loss)
-    bf_gain_db = tf.where(
-        tf.math.is_finite(bf_gain_db), bf_gain_db, tf.zeros_like(bf_gain_db)
-    )
-
-    def _apply_update():
-        gradients = tape.gradient(loss, model.trainable_variables)
-        gradients = [_sanitize_grad(g) for g in gradients]
-        gradient_norm = tf.linalg.global_norm(gradients)
-        gradient_norm = tf.where(
-            tf.math.is_finite(gradient_norm), gradient_norm, tf.zeros_like(gradient_norm)
-        )
-        gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        return loss, bf_gain_db, gradient_norm
-
-    def _skip_update():
-        tf.print("WARNING: non-finite loss; skipping optimizer step")
-        return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32)
-
-    return tf.cond(loss_finite, _apply_update, _skip_update)
-
-
-@tf.function(reduce_retracing=True)
-def _validate_step(model, batch_size, snr_db):
-    """Single validation step (graph-compiled for speed)."""
-    results = model(batch_size=batch_size, snr_db=snr_db, training=False)
-    loss = compute_loss(
-        results['beamforming_gain'],
-        results['channels'],
-        loss_type=getattr(Config, "LOSS_TYPE", "paper"),
-    )
-    
-    # Compute beamforming gain in dB for metrics
-    bf_gain_db = compute_beamforming_gain_db(
-        results['channels'],
-        results['final_tx_beams'],
-        results['final_rx_beams']
-    )
-    
-    return loss, bf_gain_db
-
-
-def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
-    """
-    Validate the model.
-    
-    Args:
-        model: BeamAlignmentModel
-        num_val_batches: Number of validation batches
-        batch_size: Batch size
-        snr_db: SNR in dB
-        target_snr_db: Target SNR for satisfaction probability
-        
-    Returns:
-        Dictionary with validation metrics
-    """
-    # OPTIMIZATION: Use fewer, larger batches for faster validation
-    # Instead of many small batches, use 2-3 large batches
-    num_val_batches = max(2, min(num_val_batches, 3))
-    val_batch_size = batch_size * 2  # Use larger batches for validation
-    
-    total_loss = 0.0
-    all_bf_gains_db = []
-    
-    for _ in range(num_val_batches):
-        loss, bf_gain_db = _validate_step(model, val_batch_size, snr_db)
-        total_loss += loss.numpy()
-        all_bf_gains_db.append(bf_gain_db)
-    
-    # Combine all beamforming gains
-    all_bf_gains_db = tf.concat(all_bf_gains_db, axis=0)
-    
-    # Compute metrics
-    mean_bf_gain = tf.reduce_mean(all_bf_gains_db)
-    std_bf_gain = tf.math.reduce_std(all_bf_gains_db)
-    
-    # Satisfaction probability (paper Eq. (4)–(6)) uses post-combining receive SNR:
-    #   SNR_RX(dB) = 10log10(|w^H H f|^2 / sigma_n^2)
-    snr_linear = 10.0 ** (tf.cast(snr_db, tf.float32) / 10.0)
-    # Paper Eq. (4): per-antenna SNR_ANT = 1/sigma_n^2 => sigma_n^2 = 1/SNR_ANT
-    noise_power = 1.0 / snr_linear  # sigma_n^2 in y_t
-    noise_power_db = 10.0 * tf.math.log(noise_power + 1e-20) / tf.math.log(10.0)
-    snr_rx_db = all_bf_gains_db - tf.cast(noise_power_db, all_bf_gains_db.dtype)
-    satisfaction_prob = tf.reduce_mean(tf.cast(snr_rx_db >= target_snr_db, tf.float32))
-    
-    metric_results = {
-        'val_loss': total_loss / num_val_batches,
-        'mean_bf_gain_db': mean_bf_gain.numpy(),
-        'std_bf_gain_db': std_bf_gain.numpy(),
-        'satisfaction_prob': satisfaction_prob.numpy()
-    }
-    
-    return metric_results
 
 
 def train(config, checkpoint_dir=None, log_dir=None):
@@ -331,32 +164,73 @@ def train(config, checkpoint_dir=None, log_dir=None):
         # Create model
         print(f"\nCreating model on {device_name}...")
         model = create_model(config)
-        
+
+        # Build the model by running a dummy forward pass before restoring checkpoint.
+        print("Building model...")
+        _ = model(batch_size=config.BATCH_SIZE, snr_db=config.SNR_TRAIN, training=False)
+
+        # Setup checkpoint manager (model weights only).
+        #
+        # This is intentionally model-only: optimizer state is fragile across
+        # architecture changes and can cause hard failures when restoring.
+        checkpoint = tf.train.Checkpoint(model=model)
+        checkpoint_manager = tf.train.CheckpointManager(
+            checkpoint, checkpoint_dir, max_to_keep=5
+        )
+
+        # Restore from checkpoint if available and compatible.
+        start_epoch = 0
+        if checkpoint_manager.latest_checkpoint:
+            ckpt_path = checkpoint_manager.latest_checkpoint
+            compat = check_checkpoint_compatibility(
+                model,
+                ckpt_path,
+                require_all_trainable=True,
+                require_ue_rnn_kernel=True,
+            )
+            if compat.ok:
+                try:
+                    checkpoint.restore(ckpt_path).expect_partial()
+                    print(f"✓ Restored model weights from {ckpt_path}")
+                except (ValueError, tf.errors.InvalidArgumentError) as e:
+                    print(
+                        "WARNING: Found a checkpoint but restore failed due to incompatibility.\n"
+                        "Starting training from scratch.\n"
+                        f"Restore error: {e}"
+                    )
+                    # Avoid overwriting incompatible checkpoints by switching
+                    # to a fresh directory.
+                    fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                    print(f"Using fresh checkpoint dir: {fresh_dir}")
+                    os.makedirs(fresh_dir, exist_ok=True)
+                    checkpoint_dir = fresh_dir
+                    checkpoint_manager = tf.train.CheckpointManager(
+                        checkpoint, checkpoint_dir, max_to_keep=5
+                    )
+            else:
+                print(
+                    "WARNING: Found a checkpoint but it does not match the current model.\n"
+                    "Starting training from scratch.\n"
+                    "Details:\n"
+                    f"{compat.summary()}\n"
+                    "Tip: use a fresh --checkpoint_dir (or delete old checkpoints) after changing architecture."
+                )
+                fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                print(f"Using fresh checkpoint dir: {fresh_dir}")
+                os.makedirs(fresh_dir, exist_ok=True)
+                checkpoint_dir = fresh_dir
+                checkpoint_manager = tf.train.CheckpointManager(
+                    checkpoint, checkpoint_dir, max_to_keep=5
+                )
+        else:
+            print("Starting training from scratch")
+
         # Create optimizer with learning rate schedule
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
         # Warm-up + decay schedule
         base_lr = config.LEARNING_RATE
         warmup_epochs = getattr(config, "LR_WARMUP_EPOCHS", 0) or 0
         decay_steps = max(1, config.LEARNING_RATE_DECAY_STEPS * steps_per_epoch)
-
-        class WarmupThenDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
-            def __init__(self, base_lr, warmup_steps, decay_steps, decay_rate):
-                self.base_lr = base_lr
-                self.warmup_steps = warmup_steps
-                self.decay = tf.keras.optimizers.schedules.ExponentialDecay(
-                    initial_learning_rate=base_lr,
-                    decay_steps=decay_steps,
-                    decay_rate=decay_rate,
-                    staircase=True,
-                )
-
-            def __call__(self, step):
-                if self.warmup_steps > 0:
-                    warm_lr = self.base_lr * tf.cast(step, tf.float32) / tf.cast(self.warmup_steps, tf.float32)
-                    lr = tf.where(step < self.warmup_steps, warm_lr, self.decay(step - self.warmup_steps))
-                else:
-                    lr = self.decay(step)
-                return lr
 
         warmup_steps = warmup_epochs * steps_per_epoch
         lr_schedule = WarmupThenDecay(
@@ -367,59 +241,6 @@ def train(config, checkpoint_dir=None, log_dir=None):
         )
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
-        
-        # Setup checkpoint manager
-        # NOTE: We only save model and optimizer state, not the epoch number
-        checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-        checkpoint_manager = tf.train.CheckpointManager(
-            checkpoint, checkpoint_dir, max_to_keep=5
-        )
-        
-        # Build the model by running a dummy forward pass before restoring checkpoint
-        print("Building model...")
-        _ = model(batch_size=config.BATCH_SIZE, snr_db=config.SNR_TRAIN, training=False)
-        
-        # CRITICAL FIX: Run a dummy training step to initialize optimizer variables!
-        # The checkpoint contains optimizer variables (momentum, etc.).
-        # If we don't use the optimizer once, these variables don't exist in the current object,
-        # so restore() fails to load them (and thus fails to load the model weights linked to them).
-        print("Initializing optimizer variables (dummy step)...")
-        # Use a small batch for speed
-        train_step(model, optimizer, batch_size=16, snr_db=config.SNR_TRAIN)
-        
-        # DEBUG: Print first variable value before restore
-        if len(model.trainable_variables) > 0:
-            print(f"DEBUG: First variable before restore: {model.trainable_variables[0].name}")
-            print(f"DEBUG: Value sample: {model.trainable_variables[0].numpy().flatten()[:5]}")
-        
-        # Restore from checkpoint if available
-        # NOTE: Checkpoint number (e.g., ckpt-30) is NOT the epoch number!
-        # The checkpoint number is just an internal counter managed by CheckpointManager.
-        # Training always resumes from epoch 0 with restored weights.
-        start_epoch = 0
-        if checkpoint_manager.latest_checkpoint:
-            status = checkpoint.restore(checkpoint_manager.latest_checkpoint)
-            
-            # STRICT CHECK: Ensure model variables are loaded
-            # assert_existing_objects_matched() ensures that for every Python object 
-            # in the checkpoint (model, optimizer), values are found in the checkpoint file.
-            try:
-                status.assert_existing_objects_matched()
-                print("✓ Checkpoint objects matched successfully")
-            except AssertionError as e:
-                print(f"WARNING: Checkpoint match error: {e}")
-                print("Continuing but be warned: some variables might not have restored.")
-            
-            print(f"Restored from {checkpoint_manager.latest_checkpoint}")
-            
-            # DEBUG: Print first variable value after restore
-            if len(model.trainable_variables) > 0:
-                print(f"DEBUG: First variable after restore: {model.trainable_variables[0].name}")
-                print(f"DEBUG: Value sample: {model.trainable_variables[0].numpy().flatten()[:5]}")
-            
-            print(f"Resuming training from epoch 1 (with restored weights)")
-        else:
-            print("Starting training from scratch")
         
         # Training loop
         print("\n" + "=" * 80)

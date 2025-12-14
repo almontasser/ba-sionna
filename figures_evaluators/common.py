@@ -2,6 +2,7 @@ import tensorflow as tf
 
 from metrics import BeamAlignmentMetrics
 from models.beam_alignment import BeamAlignmentModel
+from checkpoint_utils import check_checkpoint_compatibility
 
 
 # ==================== Model Loading and Evaluation ====================
@@ -17,8 +18,7 @@ def load_c3_model(
     Load a C3-only BeamAlignmentModel from a training checkpoint.
 
     Notes:
-      - Training checkpoints store both model and optimizer.
-      - We initialize optimizer variables once before restore to avoid missing-slot issues.
+      - This repo saves **model weights** (not optimizer state) for evaluation.
       - `scenarios` can be overridden at evaluation time to compare channel variants.
     """
     if num_sensing_steps is None:
@@ -58,7 +58,22 @@ def load_c3_model(
     ckpt_manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=1)
 
     if ckpt_manager.latest_checkpoint:
-        checkpoint.restore(ckpt_manager.latest_checkpoint).expect_partial()
+        ckpt_path = ckpt_manager.latest_checkpoint
+        compat = check_checkpoint_compatibility(
+            model,
+            ckpt_path,
+            require_all_trainable=True,
+            require_ue_rnn_kernel=True,
+        )
+        if not compat.ok:
+            raise ValueError(
+                "Checkpoint is incompatible with the current model definition.\n"
+                f"Checkpoint: {ckpt_path}\n"
+                "Details:\n"
+                f"{compat.summary()}\n"
+                "Tip: retrain with the current config (or point to a matching checkpoint_dir)."
+            )
+        checkpoint.restore(ckpt_path).expect_partial()
     else:
         raise FileNotFoundError(
             f"No checkpoint found in '{checkpoint_dir}'. "
@@ -139,8 +154,9 @@ def evaluate_at_snr_fixed_channels(model, channels, snr_db, batch_size, target_s
             training=False,
             start_idx=start_b,
         )
+        ch_final = results.get("channels_final", ch_b)
         metrics.update(
-            ch_b,
+            ch_final,
             results["final_tx_beams"],
             results["final_rx_beams"],
             noise_power=noise_power,
@@ -186,8 +202,9 @@ def evaluate_at_snr_fixed_channels_with_ablation(
             start_idx=start_b,
             measurement_ablation=measurement_ablation,
         )
+        ch_final = results.get("channels_final", ch_b)
         metrics.update(
-            ch_b,
+            ch_final,
             results["final_tx_beams"],
             results["final_rx_beams"],
             noise_power=noise_power,

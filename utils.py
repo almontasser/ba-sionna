@@ -18,31 +18,19 @@ Key Function Categories:
 
 3. Signal & Noise:
    - add_complex_noise(): Add complex Gaussian noise to signals
-   - snr_db_to_linear() / snr_linear_to_db(): SNR scale conversions
 
 4. Complex-Real Conversions (for neural networks):
-   - complex_to_real_vector(): Stack real and imaginary parts
    - real_to_complex_vector(): Convert stacked representation back to complex
-   - ComplexLayerNorm: Layer normalization for complex-valued tensors
 
 5. Performance Metrics:
    - satisfaction_probability(): Fraction of samples above SNR threshold
-
-6. Random Generation:
-   - random_angles(): Generate random angles for channel simulation
 
 All functions are TensorFlow-compatible and designed for efficient batch processing
 of complex-valued beamforming operations.
 
 Typical Usage:
     >>> import tensorflow as tf
-    >>> from utils import array_response_vector, compute_beamforming_gain_db
-    >>>
-    >>> # Generate array response for broadside direction
-    >>> angles = tf.constant([0.0, np.pi/4, -np.pi/4])
-    >>> response = array_response_vector(angles, num_antennas=32)
-    >>>
-    >>> # Compute beamforming gain
+    >>> from utils import compute_beamforming_gain_db, normalize_beam
     >>> channel = tf.random.normal([10, 16, 32], dtype=tf.complex64)
     >>> tx_beam = normalize_beam(tf.random.normal([10, 32], dtype=tf.complex64))
     >>> rx_beam = normalize_beam(tf.random.normal([10, 16], dtype=tf.complex64))
@@ -181,16 +169,6 @@ def add_complex_noise(signal, noise_power):
     return signal + noise
 
 
-def snr_db_to_linear(snr_db):
-    """Convert SNR from dB to linear scale."""
-    return 10.0 ** (snr_db / 10.0)
-
-
-def snr_linear_to_db(snr_linear):
-    """Convert SNR from linear to dB scale."""
-    return 10.0 * tf.math.log(snr_linear) / tf.math.log(10.0)
-
-
 def create_dft_codebook(num_beams, num_antennas):
     """
     Create a DFT (Discrete Fourier Transform) codebook.
@@ -246,35 +224,6 @@ def real_to_complex_vector(real_vec, complex_dim):
     real_part = tf.cast(real_part, tf.float32)
     imag_part = tf.cast(imag_part, tf.float32)
     return tf.complex(real_part, imag_part)
-
-
-class ComplexLayerNorm(tf.keras.layers.Layer):
-    """
-    Layer normalization for complex-valued tensors.
-    Normalizes across the last dimension.
-    """
-
-    def __init__(self, epsilon=1e-6, **kwargs):
-        super().__init__(**kwargs)
-        self.epsilon = epsilon
-
-    def call(self, inputs):
-        """
-        Args:
-            inputs: Complex tensor of shape (..., N)
-        """
-        # Compute mean and variance
-        mean = tf.reduce_mean(inputs, axis=-1, keepdims=True)
-        variance = tf.reduce_mean(
-            tf.math.square(tf.abs(inputs - mean)), axis=-1, keepdims=True
-        )
-
-        # Normalize
-        normalized = (inputs - mean) / tf.cast(
-            tf.sqrt(variance + self.epsilon), inputs.dtype
-        )
-
-        return normalized
 
 
 if __name__ == "__main__":

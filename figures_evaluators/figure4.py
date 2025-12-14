@@ -42,7 +42,17 @@ def generate_figure_4_scenario_comparison(config, output_dir="./results", num_sa
 
         # Pre-generate a fixed set of channels for this scenario, reused across all SNR points.
         # This makes the SNR trend reflect measurement noise, not resampling variance.
-        fixed_channels = model.channel_model.generate_channel(int(num_samples))
+        num_time_samples = 1
+        sampling_frequency = 1.0
+        if getattr(config, "MOBILITY_ENABLE", False):
+            nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
+            num_time_samples = int(nts) if nts is not None else int(model.num_sensing_steps + 1)
+            sampling_frequency = float(getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+        fixed_channels = model.channel_model.generate_channel(
+            int(num_samples),
+            num_time_samples=num_time_samples,
+            sampling_frequency=sampling_frequency,
+        )
         # Also fix the sweep start indices across SNR points (avoid extra randomness).
         fixed_start_idx = tf.random.uniform(
             [int(num_samples)], minval=0, maxval=int(config.NCB), dtype=tf.int32

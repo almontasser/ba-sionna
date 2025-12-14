@@ -1,57 +1,71 @@
+#!/usr/bin/env python3
+"""
+Checkpoint inspection / compatibility helper.
+
+This repo changes model architecture fairly often (e.g., UE input features,
+LayerNorm, mobility/time-varying channels). Old checkpoints can therefore fail
+to restore with shape-mismatch errors.
+
+This script prints:
+  - the latest checkpoint path in a directory
+  - a short compatibility summary vs the *current* model definition
+  - (optional) checkpoint variable listing
+"""
+
+import argparse
+
 import tensorflow as tf
-import os
+
+from checkpoint_utils import check_checkpoint_compatibility
 from config import Config
 from train import create_model
 
-def inspect_checkpoint():
-    checkpoint_dir = './checkpoints'
-    latest_ckpt = tf.train.latest_checkpoint(checkpoint_dir)
-    
-    if not latest_ckpt:
-        print("No checkpoint found!")
-        return
 
-    print(f"Inspecting checkpoint: {latest_ckpt}")
-    print("=" * 60)
-    
-    # List variables in checkpoint
-    ckpt_vars = tf.train.list_variables(latest_ckpt)
-    ckpt_var_names = set(name for name, shape in ckpt_vars)
-    
-    print(f"Found {len(ckpt_vars)} variables in checkpoint.")
-    for name, shape in ckpt_vars:
-        print(f"  {name}: {shape}")
-        
-    print("\n" + "=" * 60)
-    print("Current Model Variables")
-    print("=" * 60)
-    
-    # Create model and build it
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Inspect a checkpoint directory")
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default=f"{Config.CHECKPOINT_DIR}_C3_T{Config.T}",
+        help="Directory containing ckpt-* files",
+    )
+    parser.add_argument(
+        "--list_vars",
+        action="store_true",
+        help="List variables stored in the checkpoint",
+    )
+    parser.add_argument(
+        "--max_items",
+        type=int,
+        default=10,
+        help="Max missing/mismatch items printed in the compatibility summary",
+    )
+    args = parser.parse_args()
+
+    ckpt_path = tf.train.latest_checkpoint(args.checkpoint_dir)
+    if not ckpt_path:
+        raise FileNotFoundError(f"No checkpoint found in '{args.checkpoint_dir}'.")
+
+    print(f"Checkpoint: {ckpt_path}")
+
     model = create_model(Config)
-    # Run dummy pass to create variables
-    _ = model(batch_size=1, snr_db=10.0, training=False)
-    
-    model_vars = model.trainable_variables
-    model_var_names = set(var.name.split(':')[0] for var in model_vars)
-    
-    print(f"Found {len(model_vars)} trainable variables in current model.")
-    for var in model_vars:
-        print(f"  {var.name}: {var.shape}")
+    _ = model(batch_size=2, snr_db=Config.SNR_TRAIN, training=False)
 
-    print("\n" + "=" * 60)
-    print("Mismatch Analysis")
-    print("=" * 60)
-    
-    # Check for missing variables
-    # Note: Checkpoint names are like 'model/layer/kernel', Model names are 'layer/kernel:0'
-    # We need to map them.
-    
-    # Simple check: Look for "unmatched"
-    print("Variables in Checkpoint but NOT in Model (Potential Orphans):")
-    # This is hard to match exactly due to prefixing, but let's look for obvious ones
-    
-    print("\nVariables in Model but NOT in Checkpoint (Not Restored):")
-    # This is the critical part. If model expects 'gru_cell/kernel' but checkpoint has 'gru_cell_1/kernel'
-    
+    compat = check_checkpoint_compatibility(
+        model,
+        ckpt_path,
+        require_all_trainable=True,
+        require_ue_rnn_kernel=True,
+    )
+    print("\nCompatibility:")
+    print(compat.summary(max_items=args.max_items))
+
+    if args.list_vars:
+        print("\nCheckpoint variables:")
+        for name, shape in tf.train.list_variables(ckpt_path):
+            print(f"  {name}: {shape}")
+
+
 if __name__ == "__main__":
-    inspect_checkpoint()
+    main()
+

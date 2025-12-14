@@ -7,7 +7,7 @@ to process sequential sensing measurements and generate optimal receive combinin
 vectors at each step.
 
 Key Features:
-    - 2-layer GRU/LSTM RNN for temporal processing
+    - Configurable multi-layer GRU/LSTM for temporal processing
     - Adaptive receive beam generation based on sensing history
     - Feedback message generation for BS final beam refinement
     - Learns to extract channel information from noisy measurements
@@ -15,15 +15,18 @@ Key Features:
 Operation Flow:
     At each sensing step t:
     1. Input: received signal y_t (complex scalar), BS beam index x_t
-    2. RNN processes: [Re(y_t), Im(y_t), x_t/NCB] → hidden state h_t
+    2. RNN processes a feature vector derived from [Re(y_t), Im(y_t), x_t]
+       (x_t can be scalar-normalized or one-hot; time feature optional)
+       → hidden state h_t
     3. Output layer generates: receive beam w_t (complex vector, NRX-dim)
     4. Feedback layer generates: feedback m_t (real vector, NFB-dim)
     5. Beam is normalized: w_t ← w_t / ||w_t||
 
 Network Architecture:
-    Input: 3 features [Re(y_t), Im(y_t), x_t_normalized]
+    Input: features derived from [Re(y_t), Im(y_t), x_t] plus optional additions
+           (e.g., one-hot beam index, time-step feature), controlled via Config.
     ↓
-    2-layer GRU/LSTM (hidden_size per layer)
+    N-layer GRU/LSTM (hidden_size per layer)
     ↓
     ├─→ Dense(2*NRX) → Beam Output (w_t)
     └─→ Dense(NFB) → Feedback Output (m_t)
@@ -55,8 +58,16 @@ class UEController(tf.keras.Model):
                  num_antennas,
                  rnn_hidden_size=128,
                  rnn_type="GRU",
+                 num_layers=2,
                  num_feedback=4,
                  codebook_size=8,
+                 beam_index_encoding="scalar",
+                 include_time_feature=False,
+                 input_layer_norm=False,
+                 output_layer_norm=False,
+                 dropout_rate=0.0,
+                 rnn_dropout=0.0,
+                 rnn_recurrent_dropout=0.0,
                  **kwargs):
         """
         Args:
@@ -70,37 +81,74 @@ class UEController(tf.keras.Model):
         self.num_antennas = num_antennas
         self.rnn_hidden_size = rnn_hidden_size
         self.rnn_type = rnn_type
+        self.num_layers = int(num_layers)
         self.num_feedback = num_feedback
         self.codebook_size = codebook_size
+        self.beam_index_encoding = str(beam_index_encoding).lower()
+        self.include_time_feature = bool(include_time_feature)
+        self.input_layer_norm = bool(input_layer_norm)
+        self.output_layer_norm = bool(output_layer_norm)
+        self.dropout_rate = float(dropout_rate)
+        self.rnn_dropout = float(rnn_dropout)
+        self.rnn_recurrent_dropout = float(rnn_recurrent_dropout)
+
+        if self.num_layers < 1:
+            raise ValueError("num_layers must be >= 1")
+        if self.beam_index_encoding not in {"scalar", "one_hot"}:
+            raise ValueError(
+                "beam_index_encoding must be 'scalar' or 'one_hot', "
+                f"got '{self.beam_index_encoding}'."
+            )
+        if self.codebook_size < 2:
+            raise ValueError("codebook_size must be >= 2 for beam index features.")
         
-        # RNN layer - 2 layers as specified in paper
+        if self.input_layer_norm:
+            self.input_ln = tf.keras.layers.LayerNormalization(name="ue_input_ln")
+        else:
+            self.input_ln = None
+        if self.output_layer_norm:
+            self.output_ln = tf.keras.layers.LayerNormalization(name="ue_output_ln")
+        else:
+            self.output_ln = None
+        if self.dropout_rate > 0.0:
+            self.dropout = tf.keras.layers.Dropout(self.dropout_rate, name="ue_dropout")
+        else:
+            self.dropout = None
+
+        # Recurrent core (paper default: 2 layers).
+        #
+        # Important implementation detail:
+        # We keep the recurrent layers as an explicit list of cells and run them
+        # manually in `process_step()`. This avoids Keras' internal
+        # StackedRNNCells, which (depending on TF/Keras version) may not be
+        # fully serializable with `tf.train.Checkpoint(model=...)` and can lead
+        # to checkpoints that *omit* UE RNN weights.
         if rnn_type == "GRU":
-            # Paper: "two layers of gated recurrent units"
-            # Use stacked GRU cells for proper 2-layer architecture
-            cells = [
-                tf.keras.layers.GRUCell(rnn_hidden_size, name=f'ue_gru_cell_layer{i+1}')
-                for i in range(2)
-            ]
-            self.rnn = tf.keras.layers.RNN(
-                cells,
-                return_sequences=True,
-                return_state=True,
-                name='ue_2layer_gru'
-            )
-            self.num_layers = 2
+            cells = []
+            for i in range(self.num_layers):
+                cell = tf.keras.layers.GRUCell(
+                    rnn_hidden_size,
+                    dropout=self.rnn_dropout,
+                    recurrent_dropout=self.rnn_recurrent_dropout,
+                    name=f"ue_gru_cell_layer{i+1}",
+                )
+                # Assign each cell as its own attribute so TF/Keras checkpointing
+                # reliably tracks it (lists of layers are not always tracked).
+                setattr(self, f"ue_gru_cell_layer{i+1}", cell)
+                cells.append(cell)
+            self.rnn_cells = cells
         elif rnn_type == "LSTM":
-            # Also support 2-layer LSTM for compatibility
-            cells = [
-                tf.keras.layers.LSTMCell(rnn_hidden_size, name=f'ue_lstm_cell_layer{i+1}')
-                for i in range(2)
-            ]
-            self.rnn = tf.keras.layers.RNN(
-                cells,
-                return_sequences=True,
-                return_state=True,
-                name='ue_2layer_lstm'
-            )
-            self.num_layers = 2
+            cells = []
+            for i in range(self.num_layers):
+                cell = tf.keras.layers.LSTMCell(
+                    rnn_hidden_size,
+                    dropout=self.rnn_dropout,
+                    recurrent_dropout=self.rnn_recurrent_dropout,
+                    name=f"ue_lstm_cell_layer{i+1}",
+                )
+                setattr(self, f"ue_lstm_cell_layer{i+1}", cell)
+                cells.append(cell)
+            self.rnn_cells = cells
         else:
             raise ValueError(f"Unknown RNN type: {rnn_type}")
         
@@ -131,21 +179,27 @@ class UEController(tf.keras.Model):
             Initial state(s) for RNN (list of states for 2-layer RNN)
         """
         if self.rnn_type == "GRU":
-            # 2-layer GRU: return list of 2 hidden states
             return [
-                tf.zeros([batch_size, self.rnn_hidden_size]),  # Layer 1
-                tf.zeros([batch_size, self.rnn_hidden_size])   # Layer 2
+                tf.zeros([batch_size, self.rnn_hidden_size]) for _ in range(self.num_layers)
             ]
         elif self.rnn_type == "LSTM":
-            # 2-layer LSTM: return list of 2 [hidden, cell] state pairs
-            return [
-                [tf.zeros([batch_size, self.rnn_hidden_size]),  # Layer 1 hidden
-                 tf.zeros([batch_size, self.rnn_hidden_size])], # Layer 1 cell
-                [tf.zeros([batch_size, self.rnn_hidden_size]),  # Layer 2 hidden
-                 tf.zeros([batch_size, self.rnn_hidden_size])]  # Layer 2 cell
-            ]
+            # Keras expects a flat state list: [h1, c1, h2, c2, ...]
+            states = []
+            for _ in range(self.num_layers):
+                states.append(tf.zeros([batch_size, self.rnn_hidden_size]))  # h
+                states.append(tf.zeros([batch_size, self.rnn_hidden_size]))  # c
+            return states
     
-    def process_step(self, received_signal, beam_index, state):
+    def process_step(
+        self,
+        received_signal,
+        beam_index,
+        state,
+        *,
+        step_index=None,
+        num_steps=None,
+        training=False,
+    ):
         """
         Process one sensing step.
         
@@ -165,31 +219,65 @@ class UEController(tf.keras.Model):
         # Concatenate: [real(y_t), imag(y_t), x_t (one-hot or scalar)]
         y_real = tf.reshape(tf.math.real(received_signal), [batch_size, 1])
         y_imag = tf.reshape(tf.math.imag(received_signal), [batch_size, 1])
-        
-        # Normalize beam index to [0, 1] range using actual codebook size
-        x_normalized = tf.reshape(
-            tf.cast(beam_index, tf.float32) / tf.cast(self.codebook_size - 1, tf.float32),
-            [batch_size, 1]
-        )
-        
-        # RNN input: (batch, 1, input_dim)
-        rnn_input = tf.concat([y_real, y_imag, x_normalized], axis=-1)
-        rnn_input = tf.expand_dims(rnn_input, axis=1)  # (batch, 1, 3)
-        
-        # Run RNN (2-layer)
-        if self.rnn_type == "GRU":
-            # For 2-layer GRU with stacked cells
-            rnn_output, *new_states = self.rnn(rnn_input, initial_state=state)
-            # new_states is list of 2 states [layer1_state, layer2_state]
-        elif self.rnn_type == "LSTM":
-            # For 2-layer LSTM with stacked cells
-            outputs = self.rnn(rnn_input, initial_state=state)
-            rnn_output = outputs[0]
-            new_states = outputs[1:]  # List of state tuples
 
-        
-        # Remove time dimension: (batch, 1, hidden) -> (batch, hidden)
-        rnn_output = tf.squeeze(rnn_output, axis=1)
+        beam_index_i32 = tf.cast(beam_index, tf.int32)
+        if self.beam_index_encoding == "one_hot":
+            x_feat = tf.one_hot(beam_index_i32, depth=self.codebook_size, dtype=tf.float32)
+        else:
+            # Normalize beam index to [0, 1] range using actual codebook size
+            x_feat = tf.reshape(
+                tf.cast(beam_index_i32, tf.float32)
+                / tf.cast(self.codebook_size - 1, tf.float32),
+                [batch_size, 1],
+            )
+
+        features = [y_real, y_imag, x_feat]
+        if self.include_time_feature:
+            if num_steps is None:
+                raise ValueError("num_steps must be provided when include_time_feature=True")
+            denom = float(max(int(num_steps) - 1, 1))
+            if step_index is None:
+                t_norm = 0.0
+            else:
+                t_norm = float(step_index) / denom
+            t_feat = tf.fill([batch_size, 1], tf.constant(t_norm, tf.float32))
+            features.append(t_feat)
+
+        rnn_output = tf.concat(features, axis=-1)
+        if self.input_ln is not None:
+            rnn_output = self.input_ln(rnn_output)
+
+        # Run the stacked recurrent cells for one step.
+        if self.rnn_type == "GRU":
+            if len(state) != self.num_layers:
+                raise ValueError(
+                    f"Expected GRU state list of length {self.num_layers}, got {len(state)}."
+                )
+            new_states = []
+            x = rnn_output
+            for cell, h_prev in zip(self.rnn_cells, state):
+                x, [h_new] = cell(x, [h_prev], training=training)
+                new_states.append(h_new)
+            rnn_output = x
+        else:
+            expected = 2 * self.num_layers
+            if len(state) != expected:
+                raise ValueError(
+                    f"Expected LSTM state list of length {expected} (h,c per layer), got {len(state)}."
+                )
+            new_states = []
+            x = rnn_output
+            for i, cell in enumerate(self.rnn_cells):
+                h_prev = state[2 * i]
+                c_prev = state[2 * i + 1]
+                x, [h_new, c_new] = cell(x, [h_prev, c_prev], training=training)
+                new_states.extend([h_new, c_new])
+            rnn_output = x
+
+        if self.output_ln is not None:
+            rnn_output = self.output_ln(rnn_output)
+        if self.dropout is not None:
+            rnn_output = self.dropout(rnn_output, training=training)
         
         # Generate combining vector
         beam_real_imag = self.beam_output(rnn_output)  # (batch, 2*NRX)
@@ -203,7 +291,7 @@ class UEController(tf.keras.Model):
 
         return combining_vector, feedback, new_states
     
-    def call(self, received_signals, beam_indices, initial_state=None):
+    def call(self, received_signals, beam_indices, initial_state=None, training=False):
         """
         Process a sequence of sensing steps.
         
@@ -217,7 +305,12 @@ class UEController(tf.keras.Model):
             feedbacks: Sequence of feedback values, shape (batch, T, num_feedback)
         """
         batch_size = tf.shape(received_signals)[0]
-        T = tf.shape(received_signals)[1]
+        T = received_signals.shape[1]
+        if T is None:
+            raise ValueError(
+                "UEController.call() requires a statically-known T. "
+                "Use BeamAlignmentModel.execute_beam_alignment() for the end-to-end loop."
+            )
         
         # Initialize state if not provided
         if initial_state is None:
@@ -230,11 +323,18 @@ class UEController(tf.keras.Model):
         feedbacks_list = []
         
         # Process each time step
-        for t in range(T):
+        for t in range(int(T)):
             y_t = received_signals[:, t]
             x_t = beam_indices[:, t]
-            
-            combining_vector, feedback, state = self.process_step(y_t, x_t, state)
+
+            combining_vector, feedback, state = self.process_step(
+                y_t,
+                x_t,
+                state,
+                step_index=t,
+                num_steps=int(T),
+                training=training,
+            )
             
             combining_vectors_list.append(combining_vector)
             feedbacks_list.append(feedback)

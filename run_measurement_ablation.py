@@ -34,7 +34,17 @@ def main():
     checkpoint_dir = args.checkpoint_dir or f"./checkpoints_C3_T{Config.T}"
     model = load_c3_model(Config, checkpoint_dir, scenarios=[args.scenario])
 
-    channels = model.channel_model.generate_channel(int(args.num_samples))
+    num_time_samples = 1
+    sampling_frequency = 1.0
+    if getattr(Config, "MOBILITY_ENABLE", False):
+        nts = getattr(Config, "MOBILITY_NUM_TIME_SAMPLES", None)
+        num_time_samples = int(nts) if nts is not None else int(Config.T + 1)
+        sampling_frequency = float(getattr(Config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+    channels = model.channel_model.generate_channel(
+        int(args.num_samples),
+        num_time_samples=num_time_samples,
+        sampling_frequency=sampling_frequency,
+    )
     start_idx = tf.random.uniform(
         [int(args.num_samples)], minval=0, maxval=int(Config.NCB), dtype=tf.int32
     )

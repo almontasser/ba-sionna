@@ -51,6 +51,8 @@ def test_forward_shapes():
     results = model(batch_size=4, snr_db=5.0, training=False)
 
     assert results["channels"].shape == (4, Config.NRX, Config.NTX)
+    if getattr(Config, "MOBILITY_ENABLE", False):
+        assert results["channels_sequence"].shape == (4, Config.T + 1, Config.NRX, Config.NTX)
     assert results["final_tx_beams"].shape == (4, Config.NTX)
     assert results["final_rx_beams"].shape == (4, Config.NRX)
     assert results["beamforming_gain"].shape == (4,)

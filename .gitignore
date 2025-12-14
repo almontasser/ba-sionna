@@ -1,7 +1,11 @@
 checkpoints_*
+checkpoints/
 logs_*
+logs/
+results/
 __pycache__/
 events.out.tfevents.*
 *.pyc
 *.pdf
 .cuda_stub/
+tmp_*

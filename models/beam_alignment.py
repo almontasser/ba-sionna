@@ -127,6 +127,7 @@ class BeamAlignmentModel(tf.keras.Model):
         self.num_rx_antennas = num_rx_antennas
         self.codebook_size = codebook_size
         self.num_sensing_steps = num_sensing_steps
+        self.num_feedback = num_feedback
         self.start_beam_index = start_beam_index
         self.random_start = random_start
 
@@ -154,7 +155,6 @@ class BeamAlignmentModel(tf.keras.Model):
             bs_height_uma_m=bs_height_uma_m,
             bs_height_rma_m=bs_height_rma_m,
             fft_size=Config.RESOURCE_GRID_FFT_SIZE,
-            num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
             subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
             narrowband_method=narrowband_method,
             narrowband_subcarrier=narrowband_subcarrier,
@@ -165,15 +165,58 @@ class BeamAlignmentModel(tf.keras.Model):
             codebook_size=codebook_size,
             initialize_with_dft=True,
             trainable_codebook=True,  # C3: learnable codebook
+            fnn_hidden_sizes=getattr(Config, "BS_FNN_HIDDEN_SIZES", (256, 256)),
+            fnn_activation=getattr(Config, "BS_FNN_ACTIVATION", "gelu"),
+            fnn_layer_norm=getattr(Config, "BS_FNN_LAYER_NORM", True),
         )
 
         self.ue_controller = UEController(
             num_antennas=num_rx_antennas,
             rnn_hidden_size=rnn_hidden_size,
             rnn_type=rnn_type,
+            num_layers=getattr(Config, "RNN_NUM_LAYERS", 2),
             num_feedback=num_feedback,
             codebook_size=codebook_size,
+            beam_index_encoding=getattr(Config, "UE_BEAM_INDEX_ENCODING", "scalar"),
+            include_time_feature=getattr(Config, "UE_INCLUDE_TIME_FEATURE", False),
+            input_layer_norm=getattr(Config, "UE_INPUT_LAYER_NORM", False),
+            output_layer_norm=getattr(Config, "UE_OUTPUT_LAYER_NORM", False),
+            dropout_rate=getattr(Config, "UE_DROPOUT_RATE", 0.0),
+            rnn_dropout=getattr(Config, "RNN_DROPOUT", 0.0),
+            rnn_recurrent_dropout=getattr(Config, "RNN_RECURRENT_DROPOUT", 0.0),
         )
+
+    def build(self, input_shape=None):
+        """
+        Build sub-layer variables to avoid "unbuilt state" warnings under Keras 3.
+
+        The end-to-end model does not have a single fixed input tensor shape
+        because it is typically called as:
+            model(batch_size=..., snr_db=..., training=...)
+        so we proactively build the internal layers with minimal dummy tensors.
+        """
+        # Build codebook variables + instantiate BS FNN layers.
+        self.bs_controller.build(None)
+
+        # Build BS feedback network weights (Dense/LayerNorm) by a dummy call.
+        _ = self.bs_controller.get_beam_from_feedback(
+            tf.zeros([1, int(self.num_feedback)], dtype=tf.float32)
+        )
+
+        # Build UE RNN + output heads by running one dummy step.
+        y0 = tf.zeros([1], dtype=tf.complex64)
+        x0 = tf.zeros([1], dtype=tf.int32)
+        state0 = self.ue_controller.get_initial_state(1)
+        _ = self.ue_controller.process_step(
+            y0,
+            x0,
+            state0,
+            step_index=0,
+            num_steps=int(max(self.num_sensing_steps, 1)),
+            training=False,
+        )
+
+        super().build(input_shape)
 
     def execute_beam_alignment(
         self,
@@ -212,6 +255,34 @@ class BeamAlignmentModel(tf.keras.Model):
         """
         batch_size = tf.shape(channels)[0]
         T = self.num_sensing_steps
+        channels_rank = channels.shape.rank
+        if channels_rank == 3:
+            # Static channel within the episode: H is constant for all t.
+            channels_final = channels
+
+            def _channel_at_step(step_idx):
+                del step_idx
+                return channels
+
+        elif channels_rank == 4:
+            # Time-varying channel: channels is (B, S, NRX, NTX), and we use
+            # H[t] for sensing step t, and H[T] for the final beamforming gain.
+            num_time_samples = tf.shape(channels)[1]
+            tf.debugging.assert_greater_equal(
+                num_time_samples,
+                T + 1,
+                message="Time-varying channel must provide at least T+1 samples (sensing+final).",
+            )
+            channels_final = channels[:, T, :, :]
+
+            def _channel_at_step(step_idx):
+                return channels[:, step_idx, :, :]
+
+        else:
+            raise ValueError(
+                "channels must have shape (B, NRX, NTX) or (B, S, NRX, NTX). "
+                f"Got rank={channels_rank}."
+            )
 
         # Determine starting beam index
         if start_idx is None:
@@ -267,11 +338,19 @@ class BeamAlignmentModel(tf.keras.Model):
                 # Use previous received signal to generate current beam
                 y_prev = received_signals_list[-1]
                 x_prev = beam_indices[:, t - 1]
-                w_t, _, ue_state = self.ue_controller.process_step(y_prev, x_prev, ue_state)
+                w_t, _, ue_state = self.ue_controller.process_step(
+                    y_prev,
+                    x_prev,
+                    ue_state,
+                    step_index=t - 1,
+                    num_steps=T,
+                    training=training,
+                )
 
             # Compute received signal: y_t = w_t^H @ H @ f_t + noise
             # H @ f_t
-            Hf = tf.linalg.matvec(channels, f_t)  # (batch, nrx)
+            H_t = _channel_at_step(t)
+            Hf = tf.linalg.matvec(H_t, f_t)  # (batch, nrx)
 
             # w_t^H @ (H @ f_t)
             signal = tf.reduce_sum(tf.math.conj(w_t) * Hf, axis=-1)  # (batch,)
@@ -304,7 +383,12 @@ class BeamAlignmentModel(tf.keras.Model):
         y_last = received_signals_list[-1]
         x_last = beam_indices[:, T - 1]
         final_rx_beam, final_feedback, _ = self.ue_controller.process_step(
-            y_last, x_last, ue_state
+            y_last,
+            x_last,
+            ue_state,
+            step_index=T - 1,
+            num_steps=T,
+            training=training,
         )
 
         # BS generates final beam f_T = g3(m_FB)
@@ -313,7 +397,7 @@ class BeamAlignmentModel(tf.keras.Model):
         # 3. Compute final beamforming gain
         # This is the objective function to maximize
         final_beamforming_gain = compute_beamforming_gain(
-            channels, final_tx_beam, final_rx_beam
+            channels_final, final_tx_beam, final_rx_beam
         )
 
         results = {
@@ -325,7 +409,10 @@ class BeamAlignmentModel(tf.keras.Model):
             "tx_beams_sequence": tx_beams_sequence,
             "rx_beams_sequence": rx_beams_sequence,
             "feedback": final_feedback,
+            "channels_final": channels_final,
         }
+        if channels_rank == 4:
+            results["channels_sequence"] = channels
 
         return results
 
@@ -342,7 +429,19 @@ class BeamAlignmentModel(tf.keras.Model):
             Dictionary with alignment results
         """
         # Generate channels
-        channels = self.channel_model.generate_channel(batch_size)
+        num_time_samples = 1
+        sampling_frequency = 1.0
+        if getattr(Config, "MOBILITY_ENABLE", False):
+            nts = getattr(Config, "MOBILITY_NUM_TIME_SAMPLES", None)
+            num_time_samples = int(nts) if nts is not None else int(self.num_sensing_steps + 1)
+            sampling_frequency = float(
+                getattr(Config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0)
+            )
+        channels = self.channel_model.generate_channel(
+            batch_size,
+            num_time_samples=num_time_samples,
+            sampling_frequency=sampling_frequency,
+        )
 
         # Compute noise power from per-antenna SNR.
         # Paper Eq. (4): SNR_ANT = 1/sigma_n^2 (pilot power normalized to 1),
@@ -353,10 +452,16 @@ class BeamAlignmentModel(tf.keras.Model):
         # Execute beam alignment
         results = self.execute_beam_alignment(channels, noise_power, training=training)
 
-        # Add channel to results
-        results["channels"] = channels
+        # Add channel(s) to results:
+        # - "channels" is kept as the final channel snapshot for compatibility with
+        #   losses/metrics that expect (B,NRX,NTX).
+        results["channels"] = results.get("channels_final", channels)
+        if channels.shape.rank == 4:
+            results["channels_sequence"] = channels
         results["snr_db"] = snr_db
         results["noise_power"] = noise_power
+        results["channel_num_time_samples"] = num_time_samples
+        results["channel_sampling_frequency"] = sampling_frequency
 
         return results
 

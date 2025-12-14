@@ -33,7 +33,7 @@ The implementation automatically detects and uses the best available hardware: *
 
 ```bash
 # Clone or navigate to the repository
-cd /Users/almontasser/dev/beam-alignment
+cd /path/to/ba-sionna
 
 # Install dependencies
 pip install -r requirements.txt
@@ -56,9 +56,12 @@ beam-alignment/
 ├── config.py                 # System configuration and hyperparameters
 ├── device_setup.py          # Automatic device detection (CUDA/MPS/CPU)
 ├── utils.py                 # Utility functions (array response, beamforming)
-├── channel_model.py         # TR 38.901 scenario channel model (UMi/UMa/RMa)
+├── channel_model.py         # Public channel-model wrapper (re-exports)
+├── channels/                # TR 38.901 scenario channel implementation
 ├── metrics.py               # Performance metrics and baselines
+├── baselines.py             # Baseline schemes (e.g., exhaustive search)
 ├── train.py                 # Training script
+├── training/                # Training steps + LR schedules
 ├── evaluate.py              # Evaluation and figure reproduction
 ├── models/
 │   ├── bs_controller.py     # Base station with learned codebook
@@ -85,6 +88,8 @@ python train.py --epochs 50 --batch_size 256 --lr 0.001
 # Quick test run
 python train.py --test_mode
 ```
+
+See `QUICKSTART.md` and `VALIDATION_GUIDE.md` for recommended validation steps.
 
 ### Monitoring Training
 
@@ -125,7 +130,11 @@ Key parameters in `config.py`:
 | `EPOCHS` | 100 | Number of training epochs |
 | `LEARNING_RATE` | 0.001 | Initial learning rate |
 | `RNN_TYPE` | "GRU" | UE RNN type (GRU/LSTM) |
-| `RNN_HIDDEN_SIZE` | 384 | RNN hidden state size |
+| `RNN_NUM_LAYERS` | 2 | Number of recurrent layers |
+| `RNN_HIDDEN_SIZE` | 256 | RNN hidden state size |
+| `UE_BEAM_INDEX_ENCODING` | "one_hot" | How `x_t` is fed to the UE RNN |
+| `UE_INCLUDE_TIME_FEATURE` | True | Add `t/(T-1)` as an RNN input |
+| `MOBILITY_ENABLE` | True | Enable time-varying `H[t]` within an episode |
 
 ## Model Architecture
 
@@ -209,6 +218,15 @@ This implementation is for research and educational purposes.
 ### Out of Memory Errors
 - Reduce `BATCH_SIZE` in `config.py`
 - Enable memory growth for GPU in `device_setup.py`
+
+### Checkpoint Restore Errors (shape mismatch)
+If you see an error like:
+`Received incompatible tensor with shape ... when attempting to restore variable with shape ...`,
+you are trying to load a checkpoint produced by a **different model definition** (e.g., different UE features/RNN size).
+
+- Use a fresh directory: `python train.py --checkpoint_dir ./checkpoints_new_run`
+- Or delete/rename the old checkpoint folder.
+- See `VALIDATION_GUIDE.md` for details.
 
 ### Slow Training on CPU
 - Consider using cloud GPU (Google Colab, AWS, etc.)
