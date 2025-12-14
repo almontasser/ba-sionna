@@ -155,38 +155,54 @@ def train_step(model, optimizer, batch_size, snr_db):
            (in channel_model.generate_channel)
         2. Random SNR per batch (if enabled via Config.SNR_TRAIN_RANGE)
     """
-    with tf.GradientTape() as tape:
-        # Forward pass
-        results = model(batch_size=batch_size, snr_db=snr_db, training=True)
+    def _sanitize_grad(g):
+        if g is None:
+            return None
+        if isinstance(g, tf.IndexedSlices):
+            finite = tf.math.is_finite(g.values)
+            values = tf.where(finite, g.values, tf.zeros_like(g.values))
+            return tf.IndexedSlices(values, g.indices, g.dense_shape)
+        finite = tf.math.is_finite(g)
+        return tf.where(finite, g, tf.zeros_like(g))
 
+    with tf.GradientTape() as tape:
+        results = model(batch_size=batch_size, snr_db=snr_db, training=True)
         loss = compute_loss(
-            results['beamforming_gain'],
-            results['channels'],
+            results["beamforming_gain"],
+            results["channels"],
             loss_type=getattr(Config, "LOSS_TYPE", "paper"),
         )
-    
-    # Compute gradients
-    gradients = tape.gradient(loss, model.trainable_variables)
-    
-    # Compute gradient norm BEFORE clipping (important diagnostic)
-    gradient_norm = tf.linalg.global_norm(gradients)
-    
-    # Clip gradients to prevent explosion
-    gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
-    
-    # Apply gradients
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    
-    # Compute mean BF gain in dB for logging
+
+    # Compute mean BF gain in dB for logging (even if we end up skipping the update)
     bf_gain_db = tf.reduce_mean(
         compute_beamforming_gain_db(
-            results['channels'],
-            results['final_tx_beams'],
-            results['final_rx_beams']
+            results["channels"],
+            results["final_tx_beams"],
+            results["final_rx_beams"],
         )
     )
 
-    return loss, bf_gain_db, gradient_norm
+    loss_finite = tf.math.is_finite(loss)
+    bf_gain_db = tf.where(
+        tf.math.is_finite(bf_gain_db), bf_gain_db, tf.zeros_like(bf_gain_db)
+    )
+
+    def _apply_update():
+        gradients = tape.gradient(loss, model.trainable_variables)
+        gradients = [_sanitize_grad(g) for g in gradients]
+        gradient_norm = tf.linalg.global_norm(gradients)
+        gradient_norm = tf.where(
+            tf.math.is_finite(gradient_norm), gradient_norm, tf.zeros_like(gradient_norm)
+        )
+        gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        return loss, bf_gain_db, gradient_norm
+
+    def _skip_update():
+        tf.print("WARNING: non-finite loss; skipping optimizer step")
+        return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32)
+
+    return tf.cond(loss_finite, _apply_update, _skip_update)
 
 
 @tf.function(reduce_retracing=True)
@@ -436,8 +452,13 @@ def train(config, checkpoint_dir=None, log_dir=None):
                 global_step += 1
                 
                 # Update progress bar
+                # NOTE: With LOSS_TYPE="paper", the optimized objective is the
+                # mean normalized gain: gain_norm = |w^H H f|^2 / ||H||_F^2.
+                # Since loss = -mean(gain_norm), we can report gain_norm ≈ -loss.
+                gain_norm = -loss
                 pbar_dict = {
                     'loss': f'{loss.numpy():.4f}',
+                    'gain_norm': f'{gain_norm.numpy():.4f}',
                     'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
                     'grad_norm': f'{grad_norm.numpy():.3f}'
                 }

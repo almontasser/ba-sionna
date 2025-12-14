@@ -354,10 +354,29 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
                 idxs = np.nonzero(scenario_idx == si)[0]
                 if idxs.size == 0:
                     continue
-                h_block = self._generate_scenario_block(int(si), int(idxs.size))
+                # Generate and sanitize a block. Some TF/Sionna combinations can
+                # occasionally emit non-finite values; resample a few times and
+                # finally zero any remaining non-finite entries.
+                h_block = None
+                for _ in range(3):
+                    candidate = self._generate_scenario_block(int(si), int(idxs.size))
+                    finite_mask = tf.math.is_finite(tf.math.real(candidate)) & tf.math.is_finite(
+                        tf.math.imag(candidate)
+                    )
+                    if bool(tf.reduce_all(finite_mask).numpy()):
+                        h_block = candidate
+                        break
+                if h_block is None:
+                    h_block = candidate
+                finite_mask = tf.math.is_finite(tf.math.real(h_block)) & tf.math.is_finite(
+                    tf.math.imag(h_block)
+                )
+                h_block = tf.where(finite_mask, h_block, tf.zeros_like(h_block))
                 scatter_idx = tf.constant(idxs.reshape(-1, 1), dtype=tf.int32)
                 h_out = tf.tensor_scatter_nd_update(h_out, scatter_idx, h_block)
 
+            finite_mask = tf.math.is_finite(tf.math.real(h_out)) & tf.math.is_finite(tf.math.imag(h_out))
+            h_out = tf.where(finite_mask, h_out, tf.zeros_like(h_out))
             return h_out
 
     def generate_channel(self, batch_size):
