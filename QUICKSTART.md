@@ -34,6 +34,12 @@ use a fresh directory (or delete old checkpoints). See `VALIDATION_GUIDE.md`.
 python train.py --checkpoint_dir ./checkpoints_run1
 ```
 
+If you want to force GPU usage (and fail fast if no GPU is visible):
+
+```bash
+python train.py --require_gpu --channel_gen_device gpu --train_channels_outside_graph 1
+```
+
 ## 5) Evaluate (paper-style plots)
 
 ```bash
@@ -46,4 +52,3 @@ python evaluate.py --figure all --num_samples 2000
 - `IMPROVEMENTS_OVER_ARXIV_2401_13587v1.md` (what differs vs the paper baseline)
 - `MOBILITY_TR38901_TIME_VARIATION.md` (how mobility is modeled here)
 - `NN_ARCHITECTURE_AND_TUNING.md` (RNN/FNN sizing and tuning notes)
-

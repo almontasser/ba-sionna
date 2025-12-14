@@ -117,6 +117,18 @@ class Config:
     # A reasonable default is to align the time step with one OFDM symbol duration
     # (ignoring CP): dt ≈ 1/subcarrier_spacing.
     MOBILITY_SAMPLING_FREQUENCY_HZ = RESOURCE_GRID_SUBCARRIER_SPACING
+
+    # ==================== Performance / Device Placement ====================
+    # TR 38.901 scenario channel generation can be expensive and can run on CPU or GPU.
+    # Note: The channel generator uses Python control flow (via tf.py_function in graph
+    # mode), so it will never be "pure GPU" end-to-end, but its TensorFlow ops can
+    # still execute on GPU when this is set to "gpu"/"auto".
+    CHANNEL_GENERATION_DEVICE = "auto"  # {"auto","cpu","gpu"}
+
+    # If True, training generates channels *outside* the graph-compiled train step.
+    # This avoids `tf.py_function` inside `@tf.function`, which would otherwise force
+    # the channel tensor to be produced on CPU and then copied to GPU.
+    TRAIN_CHANNELS_OUTSIDE_GRAPH = True
     
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
@@ -219,6 +231,10 @@ class Config:
         print(f"  Indoor probability: {cls.INDOOR_PROBABILITY:.2f}")
         print(f"  Carrier Frequency: {cls.CARRIER_FREQUENCY/1e9:.0f} GHz")
         print(f"  Wavelength: {cls.WAVELENGTH*1000:.2f} mm")
+        print(f"  Channel gen device: {getattr(cls, 'CHANNEL_GENERATION_DEVICE', 'auto')}")
+        print(
+            f"  Train channels outside graph: {'on' if getattr(cls, 'TRAIN_CHANNELS_OUTSIDE_GRAPH', False) else 'off'}"
+        )
         print(f"\nBeam Alignment:")
         print(f"  Sensing Steps (T): {cls.T}")
         print(f"  BS Codebook Size (NCB): {cls.NCB}")

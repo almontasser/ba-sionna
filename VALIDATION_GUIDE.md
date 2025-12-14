@@ -10,6 +10,7 @@ If you are seeing `NaN`s, poor gain, or checkpoint restore errors, run the check
 
 ```bash
 python -c "import tensorflow as tf; print('TF', tf.__version__)"
+python -c "import tensorflow as tf; print('GPUs', tf.config.list_physical_devices('GPU'))"
 python -c "import sionna; print('Sionna', getattr(sionna,'__version__','?'))"
 python -c "from config import Config; Config.print_config()"
 ```
@@ -42,6 +43,25 @@ print("finite:", bool(tf.reduce_all(tf.math.is_finite(tf.math.real(H))).numpy())
 print("E[||H||_F^2]:", float(tf.reduce_mean(tf.reduce_sum(tf.abs(H)**2, axis=(1,2))).numpy()))
 PY
 ```
+
+### Note on “CPU vs GPU” during training
+
+Even if your NN forward/backward pass runs on GPU, **channel generation** can be a CPU bottleneck.
+This repo exposes `Config.CHANNEL_GENERATION_DEVICE`:
+
+- `"auto"` (default): try GPU if available
+- `"gpu"`: force `/GPU:0` (falls back to CPU if no GPU is visible)
+- `"cpu"`: force `/CPU:0`
+
+Channel generation still uses Python control flow, so it can’t be “100% pure GPU”, but the heavy TF ops
+inside Sionna can execute on GPU when you use `"auto"`/`"gpu"`.
+
+For better GPU placement during training, this repo also defaults to:
+
+- `Config.TRAIN_CHANNELS_OUTSIDE_GRAPH = True`
+
+This generates `H` eagerly in the Python training loop and feeds it into the graph-compiled train step,
+avoiding `tf.py_function` (which would otherwise force `H` to be produced on CPU inside `@tf.function`).
 
 Time‑varying `H[t]` (only if you enable mobility in `config.py`):
 
@@ -119,7 +139,14 @@ opt = tf.keras.optimizers.Adam(learning_rate=1e-3)
 _ = model(batch_size=32, snr_db=10.0, training=True)
 
 for i in range(10):
-    loss, bf_gain_db, grad_norm = train_step(model, opt, batch_size=32, snr_db=tf.constant(10.0, tf.float32))
+    H, _, _ = model.generate_channels(32)
+    loss, bf_gain_db, grad_norm = train_step(
+        model,
+        opt,
+        batch_size=32,
+        snr_db=tf.constant(10.0, tf.float32),
+        channels=H,
+    )
     gain_norm = -loss  # for LOSS_TYPE='paper'
     print(i, "loss", float(loss.numpy()), "gain_norm", float(gain_norm.numpy()), "BF_gain_dB", float(bf_gain_db.numpy()), "grad_norm", float(grad_norm.numpy()))
 PY
@@ -169,4 +196,3 @@ Current behavior:
 
 Recommended fix:
 - Train from scratch in a new directory: `python train.py --checkpoint_dir ./checkpoints_new_run`
-

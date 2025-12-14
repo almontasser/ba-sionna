@@ -158,6 +158,7 @@ class BeamAlignmentModel(tf.keras.Model):
             subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,
             narrowband_method=narrowband_method,
             narrowband_subcarrier=narrowband_subcarrier,
+            generation_device=getattr(Config, "CHANNEL_GENERATION_DEVICE", "cpu"),
         )
 
         self.bs_controller = BSController(
@@ -217,6 +218,31 @@ class BeamAlignmentModel(tf.keras.Model):
         )
 
         super().build(input_shape)
+
+    def _channel_time_params(self):
+        """Return (num_time_samples, sampling_frequency) based on Config mobility settings."""
+        num_time_samples = 1
+        sampling_frequency = 1.0
+        if getattr(Config, "MOBILITY_ENABLE", False):
+            nts = getattr(Config, "MOBILITY_NUM_TIME_SAMPLES", None)
+            num_time_samples = int(nts) if nts is not None else int(self.num_sensing_steps + 1)
+            sampling_frequency = float(getattr(Config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+        return num_time_samples, sampling_frequency
+
+    def generate_channels(self, batch_size):
+        """
+        Generate channel tensor(s) for an episode.
+
+        Returns:
+            (channels, num_time_samples, sampling_frequency)
+        """
+        num_time_samples, sampling_frequency = self._channel_time_params()
+        channels = self.channel_model.generate_channel(
+            batch_size,
+            num_time_samples=num_time_samples,
+            sampling_frequency=sampling_frequency,
+        )
+        return channels, num_time_samples, sampling_frequency
 
     def execute_beam_alignment(
         self,
@@ -428,20 +454,7 @@ class BeamAlignmentModel(tf.keras.Model):
         Returns:
             Dictionary with alignment results
         """
-        # Generate channels
-        num_time_samples = 1
-        sampling_frequency = 1.0
-        if getattr(Config, "MOBILITY_ENABLE", False):
-            nts = getattr(Config, "MOBILITY_NUM_TIME_SAMPLES", None)
-            num_time_samples = int(nts) if nts is not None else int(self.num_sensing_steps + 1)
-            sampling_frequency = float(
-                getattr(Config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0)
-            )
-        channels = self.channel_model.generate_channel(
-            batch_size,
-            num_time_samples=num_time_samples,
-            sampling_frequency=sampling_frequency,
-        )
+        channels, num_time_samples, sampling_frequency = self.generate_channels(batch_size)
 
         # Compute noise power from per-antenna SNR.
         # Paper Eq. (4): SNR_ANT = 1/sigma_n^2 (pilot power normalized to 1),

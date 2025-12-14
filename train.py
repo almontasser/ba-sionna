@@ -265,8 +265,18 @@ def train(config, checkpoint_dir=None, log_dir=None):
             for step in pbar:
                 # Sample SNR for this batch (domain randomization)
                 snr_db = sample_snr(config)
-                
-                loss, bf_gain_db, grad_norm = train_step(model, optimizer, config.BATCH_SIZE, snr_db)
+
+                channels = None
+                if getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
+                    channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+
+                loss, bf_gain_db, grad_norm = train_step(
+                    model,
+                    optimizer,
+                    config.BATCH_SIZE,
+                    snr_db,
+                    channels=channels,
+                )
                 
                 epoch_loss += loss.numpy()
                 epoch_bf_gain += bf_gain_db.numpy()
@@ -347,6 +357,25 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_dir', type=str, default=None, help='Checkpoint directory')
     parser.add_argument('--log_dir', type=str, default=None, help='Log directory')
     parser.add_argument(
+        '--require_gpu',
+        action='store_true',
+        help='Fail fast if no GPU is visible to TensorFlow',
+    )
+    parser.add_argument(
+        '--channel_gen_device',
+        type=str,
+        default=None,
+        choices=['auto', 'cpu', 'gpu'],
+        help='Channel generation device placement (overrides Config.CHANNEL_GENERATION_DEVICE)',
+    )
+    parser.add_argument(
+        '--train_channels_outside_graph',
+        type=int,
+        default=None,
+        choices=[0, 1],
+        help='If 1, generate channels outside @tf.function (better GPU placement); overrides Config.TRAIN_CHANNELS_OUTSIDE_GRAPH',
+    )
+    parser.add_argument(
         '--scenarios',
         type=str,
         default=None,
@@ -377,6 +406,10 @@ if __name__ == "__main__":
         Config.SCENARIOS = [s.strip() for s in args.scenarios.split(',') if s.strip()]
     if args.target_snr is not None:
         Config.SNR_TARGET = args.target_snr
+    if args.channel_gen_device is not None:
+        Config.CHANNEL_GENERATION_DEVICE = args.channel_gen_device
+    if args.train_channels_outside_graph is not None:
+        Config.TRAIN_CHANNELS_OUTSIDE_GRAPH = bool(int(args.train_channels_outside_graph))
     if args.snr_train_range is not None:
         try:
             low, high = args.snr_train_range.split(',')
@@ -395,5 +428,14 @@ if __name__ == "__main__":
     if checkpoint_dir is None:
         checkpoint_dir = f"./checkpoints_C3_T{Config.T}"
     
+    if args.require_gpu:
+        import tensorflow as tf
+
+        if not tf.config.list_physical_devices("GPU"):
+            raise RuntimeError(
+                "No GPU visible to TensorFlow, but --require_gpu was set. "
+                "Check your CUDA/TensorFlow install and CUDA_VISIBLE_DEVICES."
+            )
+
     # Run training
     train(Config, checkpoint_dir=checkpoint_dir, log_dir=args.log_dir)

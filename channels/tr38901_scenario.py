@@ -59,6 +59,7 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         subcarrier_spacing: float = 120e3,
         narrowband_method: str = "center",
         narrowband_subcarrier: int | None = None,
+        generation_device: str = "cpu",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -93,6 +94,12 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         self.subcarrier_spacing = float(subcarrier_spacing)
         self.narrowband_method = str(narrowband_method)
         self.narrowband_subcarrier = narrowband_subcarrier
+        self.generation_device = str(generation_device).lower()
+        if self.generation_device not in {"auto", "cpu", "gpu"}:
+            raise ValueError(
+                "generation_device must be one of {'auto','cpu','gpu'}, "
+                f"got '{self.generation_device}'."
+            )
 
         if not (0.0 <= self.indoor_probability <= 1.0):
             raise ValueError("indoor_probability must be in [0,1].")
@@ -179,6 +186,7 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
             nb_desc += f" (k={self.narrowband_subcarrier})"
         print(f"  - Narrowband method: {nb_desc}")
         print(f"  - Antennas: {self.num_tx_antennas} BS, {self.num_rx_antennas} UE")
+        print(f"  - Channel generation device: {self.generation_device}")
 
     def _bs_height_for_scenario(self, scenario: str) -> float:
         if scenario == "UMi":
@@ -318,7 +326,18 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         if num_time_samples <= 0:
             raise ValueError("num_time_samples must be a positive integer.")
 
-        with tf.device("/CPU:0"):
+        gen_device = "/CPU:0"
+        if self.generation_device in {"auto", "gpu"}:
+            try:
+                if tf.config.list_physical_devices("GPU"):
+                    gen_device = "/GPU:0"
+                elif self.generation_device == "gpu":
+                    # Explicit GPU requested but none visible.
+                    gen_device = "/CPU:0"
+            except Exception:
+                gen_device = "/CPU:0"
+
+        with tf.device(gen_device):
             scenario_idx = np.random.randint(
                 0, self.num_scenarios, size=batch_size, dtype=np.int32
             )
@@ -418,4 +437,3 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
 
     def call(self, batch_size):
         return self.generate_channel(batch_size)
-

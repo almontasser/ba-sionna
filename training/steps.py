@@ -26,10 +26,12 @@ def sample_snr(config):
 
 
 @tf.function(reduce_retracing=True)
-def train_step(model, optimizer, batch_size, snr_db):
+def train_step(model, optimizer, batch_size, snr_db, channels=None):
     """
     Execute one training step with domain randomization.
     """
+
+    snr_db = tf.cast(snr_db, tf.float32)
 
     def _sanitize_grad(g):
         if g is None:
@@ -42,16 +44,24 @@ def train_step(model, optimizer, batch_size, snr_db):
         return tf.where(finite, g, tf.zeros_like(g))
 
     with tf.GradientTape() as tape:
-        results = model(batch_size=batch_size, snr_db=snr_db, training=True)
+        if channels is None:
+            results = model(batch_size=batch_size, snr_db=snr_db, training=True)
+            channels_final = results["channels"]
+        else:
+            snr_linear = tf.pow(tf.constant(10.0, tf.float32), snr_db / 10.0)
+            noise_power = 1.0 / snr_linear
+            results = model.execute_beam_alignment(channels, noise_power, training=True)
+            channels_final = results["channels_final"]
+
         loss = compute_loss(
             results["beamforming_gain"],
-            results["channels"],
+            channels_final,
             loss_type=getattr(Config, "LOSS_TYPE", "paper"),
         )
 
     bf_gain_db = tf.reduce_mean(
         compute_beamforming_gain_db(
-            results["channels"],
+            channels_final,
             results["final_tx_beams"],
             results["final_rx_beams"],
         )
@@ -79,22 +89,32 @@ def train_step(model, optimizer, batch_size, snr_db):
 
 
 @tf.function(reduce_retracing=True)
-def validate_step(model, batch_size, snr_db):
+def validate_step(model, batch_size, snr_db, channels=None):
     """Single validation step (graph-compiled for speed)."""
-    results = model(batch_size=batch_size, snr_db=snr_db, training=False)
+    snr_db = tf.cast(snr_db, tf.float32)
+    if channels is None:
+        results = model(batch_size=batch_size, snr_db=snr_db, training=False)
+        channels_final = results["channels"]
+        noise_power = results.get("noise_power", None)
+    else:
+        snr_linear = tf.pow(tf.constant(10.0, tf.float32), snr_db / 10.0)
+        noise_power = 1.0 / snr_linear
+        results = model.execute_beam_alignment(channels, noise_power, training=False)
+        channels_final = results["channels_final"]
+
     loss = compute_loss(
         results["beamforming_gain"],
-        results["channels"],
+        channels_final,
         loss_type=getattr(Config, "LOSS_TYPE", "paper"),
     )
 
     bf_gain_db = compute_beamforming_gain_db(
-        results["channels"],
+        channels_final,
         results["final_tx_beams"],
         results["final_rx_beams"],
     )
 
-    return loss, bf_gain_db, results.get("noise_power", None)
+    return loss, bf_gain_db, noise_power
 
 
 def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
@@ -109,7 +129,12 @@ def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
     noise_power = None
 
     for _ in range(num_val_batches):
-        loss, bf_gain_db, noise_power = validate_step(model, val_batch_size, snr_db)
+        channels = None
+        if getattr(Config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
+            channels, _, _ = model.generate_channels(val_batch_size)
+        loss, bf_gain_db, noise_power = validate_step(
+            model, val_batch_size, snr_db, channels=channels
+        )
         total_loss += float(loss.numpy())
         all_bf_gains_db.append(bf_gain_db)
 
@@ -135,4 +160,3 @@ def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
         "std_bf_gain_db": float(std_bf_gain.numpy()),
         "satisfaction_prob": float(satisfaction_prob.numpy()),
     }
-
