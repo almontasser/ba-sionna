@@ -18,6 +18,7 @@ import numpy as np
 import tensorflow as tf
 
 from config import Config
+from device_setup import setup_device
 from models.beam_alignment import BeamAlignmentModel
 
 
@@ -34,9 +35,17 @@ def test_forward_shapes():
         start_beam_index=Config.START_BEAM_INDEX,
         random_start=Config.RANDOM_START,
         carrier_frequency=Config.CARRIER_FREQUENCY,
-        cdl_models=Config.CDL_MODELS,
-        delay_spread_range=Config.DELAY_SPREAD_RANGE,
-        ue_speed_range=Config.UE_SPEED_RANGE,
+        scenarios=Config.SCENARIOS,
+        o2i_model=getattr(Config, "O2I_MODEL", "low"),
+        enable_pathloss=getattr(Config, "ENABLE_PATHLOSS", False),
+        enable_shadow_fading=getattr(Config, "ENABLE_SHADOW_FADING", False),
+        distance_range_m=getattr(Config, "DISTANCE_RANGE_M", (10.0, 200.0)),
+        ue_speed_range=getattr(Config, "UE_SPEED_RANGE", (0.0, 30.0)),
+        indoor_probability=getattr(Config, "INDOOR_PROBABILITY", 0.0),
+        ut_height_m=getattr(Config, "UT_HEIGHT_M", 1.5),
+        bs_height_umi_m=getattr(Config, "BS_HEIGHT_UMI_M", 10.0),
+        bs_height_uma_m=getattr(Config, "BS_HEIGHT_UMA_M", 25.0),
+        bs_height_rma_m=getattr(Config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
     results = model(batch_size=4, snr_db=5.0, training=False)
@@ -63,9 +72,17 @@ def test_gradient_flow():
         start_beam_index=Config.START_BEAM_INDEX,
         random_start=Config.RANDOM_START,
         carrier_frequency=Config.CARRIER_FREQUENCY,
-        cdl_models=Config.CDL_MODELS,
-        delay_spread_range=Config.DELAY_SPREAD_RANGE,
-        ue_speed_range=Config.UE_SPEED_RANGE,
+        scenarios=Config.SCENARIOS,
+        o2i_model=getattr(Config, "O2I_MODEL", "low"),
+        enable_pathloss=getattr(Config, "ENABLE_PATHLOSS", False),
+        enable_shadow_fading=getattr(Config, "ENABLE_SHADOW_FADING", False),
+        distance_range_m=getattr(Config, "DISTANCE_RANGE_M", (10.0, 200.0)),
+        ue_speed_range=getattr(Config, "UE_SPEED_RANGE", (0.0, 30.0)),
+        indoor_probability=getattr(Config, "INDOOR_PROBABILITY", 0.0),
+        ut_height_m=getattr(Config, "UT_HEIGHT_M", 1.5),
+        bs_height_umi_m=getattr(Config, "BS_HEIGHT_UMI_M", 10.0),
+        bs_height_uma_m=getattr(Config, "BS_HEIGHT_UMA_M", 25.0),
+        bs_height_rma_m=getattr(Config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
     with tf.GradientTape() as tape:
@@ -91,9 +108,17 @@ def test_codebook_updates():
         start_beam_index=Config.START_BEAM_INDEX,
         random_start=Config.RANDOM_START,
         carrier_frequency=Config.CARRIER_FREQUENCY,
-        cdl_models=Config.CDL_MODELS,
-        delay_spread_range=Config.DELAY_SPREAD_RANGE,
-        ue_speed_range=Config.UE_SPEED_RANGE,
+        scenarios=Config.SCENARIOS,
+        o2i_model=getattr(Config, "O2I_MODEL", "low"),
+        enable_pathloss=getattr(Config, "ENABLE_PATHLOSS", False),
+        enable_shadow_fading=getattr(Config, "ENABLE_SHADOW_FADING", False),
+        distance_range_m=getattr(Config, "DISTANCE_RANGE_M", (10.0, 200.0)),
+        ue_speed_range=getattr(Config, "UE_SPEED_RANGE", (0.0, 30.0)),
+        indoor_probability=getattr(Config, "INDOOR_PROBABILITY", 0.0),
+        ut_height_m=getattr(Config, "UT_HEIGHT_M", 1.5),
+        bs_height_umi_m=getattr(Config, "BS_HEIGHT_UMI_M", 10.0),
+        bs_height_uma_m=getattr(Config, "BS_HEIGHT_UMA_M", 25.0),
+        bs_height_rma_m=getattr(Config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
     # Build
@@ -121,6 +146,7 @@ def test_codebook_updates():
 def main():
     print("🔍 Beam Alignment C3-only Test Suite")
     print("=" * 60)
+    setup_device(verbose=False)
     test_forward_shapes()
     test_gradient_flow()
     test_codebook_updates()
@@ -129,4 +155,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

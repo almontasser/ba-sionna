@@ -117,9 +117,17 @@ def create_model(config):
         start_beam_index=getattr(config, "START_BEAM_INDEX", 0),
         random_start=getattr(config, "RANDOM_START", True),
         carrier_frequency=config.CARRIER_FREQUENCY,
-        cdl_models=config.CDL_MODELS,
-        delay_spread_range=config.DELAY_SPREAD_RANGE,
-        ue_speed_range=config.UE_SPEED_RANGE
+        scenarios=config.SCENARIOS,
+        o2i_model=getattr(config, "O2I_MODEL", "low"),
+        enable_pathloss=getattr(config, "ENABLE_PATHLOSS", False),
+        enable_shadow_fading=getattr(config, "ENABLE_SHADOW_FADING", False),
+        distance_range_m=getattr(config, "DISTANCE_RANGE_M", (10.0, 200.0)),
+        ue_speed_range=getattr(config, "UE_SPEED_RANGE", (0.0, 30.0)),
+        indoor_probability=getattr(config, "INDOOR_PROBABILITY", 0.0),
+        ut_height_m=getattr(config, "UT_HEIGHT_M", 1.5),
+        bs_height_umi_m=getattr(config, "BS_HEIGHT_UMI_M", 10.0),
+        bs_height_uma_m=getattr(config, "BS_HEIGHT_UMA_M", 25.0),
+        bs_height_rma_m=getattr(config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
     return model
@@ -143,9 +151,9 @@ def train_step(model, optimizer, batch_size, snr_db):
         
     Note:
         Domain randomization is applied via:
-        1. Random CDL model selection (in channel_model.generate_channel)
-        2. Random delay spread and UE speed (in channel_model.generate_channel)
-        3. Random SNR per batch (if snr_db is passed as range)
+        1. Random scenario selection (UMi/UMa/RMa) and topology sampling
+           (in channel_model.generate_channel)
+        2. Random SNR per batch (if enabled via Config.SNR_TRAIN_RANGE)
     """
     with tf.GradientTape() as tape:
         # Forward pass
@@ -496,8 +504,12 @@ if __name__ == "__main__":
                        help='Number of sensing steps (T). Default: Config.T (16)')
     parser.add_argument('--checkpoint_dir', type=str, default=None, help='Checkpoint directory')
     parser.add_argument('--log_dir', type=str, default=None, help='Log directory')
-    parser.add_argument('--cdl_models', type=str, default=None,
-                       help='Comma-separated list of CDL models to use (e.g., "A,C,D")')
+    parser.add_argument(
+        '--scenarios',
+        type=str,
+        default=None,
+        help='Comma-separated list of scenarios to use (e.g., "UMi,UMa,RMa")',
+    )
     parser.add_argument('--target_snr', type=float, default=None,
                        help='Target SNR (dB) for satisfaction probability metrics')
     parser.add_argument('--lr_warmup_epochs', type=int, default=0,
@@ -519,8 +531,8 @@ if __name__ == "__main__":
         Config.LR_WARMUP_EPOCHS = args.lr_warmup_epochs
     if args.num_sensing_steps is not None:
         Config.T = args.num_sensing_steps
-    if args.cdl_models is not None:
-        Config.CDL_MODELS = [m.strip() for m in args.cdl_models.split(',') if m.strip()]
+    if args.scenarios is not None:
+        Config.SCENARIOS = [s.strip() for s in args.scenarios.split(',') if s.strip()]
     if args.target_snr is not None:
         Config.SNR_TARGET = args.target_snr
     if args.snr_train_range is not None:

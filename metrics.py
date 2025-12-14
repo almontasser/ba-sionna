@@ -244,7 +244,7 @@ def compute_loss(beamforming_gains, channels=None, loss_type=None, use_log_gain=
     Compute training loss.
 
     Paper objective (Eq. 7): L = -E[ |w^H H f|^2 / ||H||_F^2 ].
-    For CDL, normalized gains are already bounded in [0,1]; clipping keeps
+    Normalized gains are bounded in [0,1] for unit-norm beams; clipping keeps
     numerical stability under mixed precision.
 
     Args:
@@ -265,7 +265,9 @@ def compute_loss(beamforming_gains, channels=None, loss_type=None, use_log_gain=
 
     if channels is not None:
         # Normalize by channel Frobenius norm squared per paper
-        channel_norms_squared = tf.reduce_sum(tf.abs(channels) ** 2, axis=(1, 2))  # (batch,)
+        channel_norms_squared = tf.reduce_sum(
+            tf.math.square(tf.abs(channels)), axis=(1, 2)
+        )  # (batch,)
         normalized_gains = beamforming_gains / (channel_norms_squared + 1e-10)
     else:
         normalized_gains = beamforming_gains

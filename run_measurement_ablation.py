@@ -24,7 +24,7 @@ from figures_evaluators.common import (
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint_dir", type=str, default=None)
-    ap.add_argument("--cdl", type=str, default="C", help="One of A/B/C/D/E")
+    ap.add_argument("--scenario", type=str, default="UMi", help="One of UMi/UMa/RMa")
     ap.add_argument("--snr_db", type=float, default=5.0)
     ap.add_argument("--num_samples", type=int, default=512)
     ap.add_argument("--batch_size", type=int, default=128)
@@ -32,7 +32,7 @@ def main():
     args = ap.parse_args()
 
     checkpoint_dir = args.checkpoint_dir or f"./checkpoints_C3_T{Config.T}"
-    model = load_c3_model(Config, checkpoint_dir, cdl_models=[args.cdl.upper()])
+    model = load_c3_model(Config, checkpoint_dir, scenarios=[args.scenario])
 
     channels = model.channel_model.generate_channel(int(args.num_samples))
     start_idx = tf.random.uniform(

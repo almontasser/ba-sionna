@@ -7,15 +7,15 @@ import tensorflow as tf
 from figures_evaluators.common import evaluate_at_snr_fixed_channels, load_c3_model
 
 
-def generate_figure_4_cdl_comparison(config, output_dir="./results", num_samples=2000):
+def generate_figure_4_scenario_comparison(config, output_dir="./results", num_samples=2000):
     """
     Figure 4 (same axes as paper): BF gain and satisfaction probability vs SNR.
 
     Change vs paper: instead of comparing schemes, we compare channel variants
-    (CDL-A..E) using the same trained C3 model.
+    (UMi/UMa/RMa) using the same trained C3 model.
     """
     print("\n" + "=" * 80)
-    print("GENERATING FIGURE 4: C3 PERFORMANCE ACROSS CDL VARIANTS")
+    print("GENERATING FIGURE 4: C3 PERFORMANCE ACROSS SCENARIO VARIANTS")
     print("=" * 80)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -25,22 +25,22 @@ def generate_figure_4_cdl_comparison(config, output_dir="./results", num_samples
     batch_size = config.BATCH_SIZE
     target_snr_db = float(getattr(config, "SNR_TARGET", 20.0))
 
-    # Compare each CDL variant separately at evaluation time
-    cdl_variants = list(getattr(config, "CDL_MODELS", ["A", "B", "C", "D", "E"]))
+    # Compare each scenario variant separately at evaluation time
+    scenario_variants = list(getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"]))
 
     checkpoint_dir = f"./checkpoints_C3_T{config.T}"
 
     results = {
-        cdl: {"bf_gain": [], "sat_prob": []}
-        for cdl in cdl_variants
+        scenario: {"bf_gain": [], "sat_prob": []}
+        for scenario in scenario_variants
     }
 
-    # Evaluate one model per CDL variant (same weights, different channel condition)
-    for cdl in cdl_variants:
-        print(f"\nLoading C3 model for evaluation on CDL-{cdl}...")
-        model = load_c3_model(config, checkpoint_dir, cdl_models=[cdl])
+    # Evaluate one model per scenario variant (same weights, different channel condition)
+    for scenario in scenario_variants:
+        print(f"\nLoading C3 model for evaluation on {scenario}...")
+        model = load_c3_model(config, checkpoint_dir, scenarios=[scenario])
 
-        # Pre-generate a fixed set of channels for this CDL, reused across all SNR points.
+        # Pre-generate a fixed set of channels for this scenario, reused across all SNR points.
         # This makes the SNR trend reflect measurement noise, not resampling variance.
         fixed_channels = model.channel_model.generate_channel(int(num_samples))
         # Also fix the sweep start indices across SNR points (avoid extra randomness).
@@ -48,8 +48,8 @@ def generate_figure_4_cdl_comparison(config, output_dir="./results", num_samples
             [int(num_samples)], minval=0, maxval=int(config.NCB), dtype=tf.int32
         )
 
-        print(f"Evaluating CDL-{cdl}...")
-        for snr_db in tqdm(snr_range, desc=f"CDL-{cdl}"):
+        print(f"Evaluating {scenario}...")
+        for snr_db in tqdm(snr_range, desc=f"{scenario}"):
             metrics = evaluate_at_snr_fixed_channels(
                 model,
                 fixed_channels,
@@ -58,32 +58,32 @@ def generate_figure_4_cdl_comparison(config, output_dir="./results", num_samples
                 target_snr_db,
                 start_idx=fixed_start_idx,
             )
-            results[cdl]["bf_gain"].append(metrics["mean_bf_gain_db"])
-            results[cdl]["sat_prob"].append(metrics["satisfaction_prob"])
+            results[scenario]["bf_gain"].append(metrics["mean_bf_gain_db"])
+            results[scenario]["sat_prob"].append(metrics["satisfaction_prob"])
 
     # Plot (keep axes/labels structure)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
     markers = ["o", "s", "^", "D", "v", "P", "X"]
-    for i, cdl in enumerate(cdl_variants):
+    for i, scenario in enumerate(scenario_variants):
         marker = markers[i % len(markers)]
         ax1.plot(
             snr_range,
-            results[cdl]["bf_gain"],
+            results[scenario]["bf_gain"],
             marker=marker,
             linestyle="-",
             linewidth=2.0,
             markersize=7,
-            label=f"CDL-{cdl}",
+            label=f"{scenario}",
         )
         ax2.plot(
             snr_range,
-            results[cdl]["sat_prob"],
+            results[scenario]["sat_prob"],
             marker=marker,
             linestyle="-",
             linewidth=2.0,
             markersize=7,
-            label=f"CDL-{cdl}",
+            label=f"{scenario}",
         )
 
     ax1.set_xlabel("SNR [dB]", fontsize=14)
@@ -100,7 +100,7 @@ def generate_figure_4_cdl_comparison(config, output_dir="./results", num_samples
     ax2.set_title("(b) Satisfaction Probability vs SNR", fontsize=14)
 
     plt.tight_layout()
-    fig_path = os.path.join(output_dir, "figure_4_cdl_comparison.png")
+    fig_path = os.path.join(output_dir, "figure_4_scenario_comparison.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     print(f"\n✓ Saved Figure 4 to {fig_path}")
     plt.close()

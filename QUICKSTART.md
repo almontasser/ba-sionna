@@ -2,13 +2,7 @@
 
 ## System Status
 ✅ **All components implemented and tested successfully**  
-✅ **MPS (Apple Silicon GPU) acceleration working**  
 ✅ **Training pipeline verified**
-
-## Your Setup
-- **Device**: Apple Silicon Mac with MPS acceleration
-- **TensorFlow**: 2.20.0
-- **Virtual Environment**: `.venv` (activated)
 
 ## Fixed Issues
 1. ✅ MPS device detection (was showing CPU, now shows MPS)
@@ -19,20 +13,17 @@
 
 ### Test Mode (Quick Verification - 1 Epoch)
 ```bash
-source .venv/bin/activate
 python train.py --test_mode
 ```
 
 ### Full Training
 ```bash
-source .venv/bin/activate
 python train.py
 ```
 
 ### Monitor Progress
 ```bash
 # In another terminal
-source .venv/bin/activate
 tensorboard --logdir ./logs
 ```
 Then open: http://localhost:6006
@@ -48,13 +39,13 @@ Then open: http://localhost:6006
 
 ### Evaluate Model
 ```bash
-python evaluate.py --checkpoint_dir ./checkpoints --output_dir ./results
+python evaluate.py --figure all --num_samples 2000
 ```
 
 ### View Results
 Results will be saved as PNG plots in `./results/`:
-- `figure_6_reproduction.png` - BF gain vs SNR
-- `figure_7_reproduction.png` - BF gain vs sensing steps
+- `figure_4_scenario_comparison.png` - BF gain + satisfaction vs SNR (UMi/UMa/RMa)
+- `figure_5_scenario_comparison_vs_T.png` - BF gain + satisfaction vs sensing steps T
 
 ## All Available Commands
 
@@ -70,16 +61,18 @@ python models/bs_controller.py
 python models/ue_controller.py
 python models/beam_alignment.py
 python metrics.py
+python test_scheme_compliance.py
 
 # Training options
 python train.py --help
 python train.py --epochs 50 --batch_size 256
 python train.py --lr 0.001
+python train.py --scenarios "UMi,UMa,RMa"
 
 # Evaluation options
-python evaluate.py --mode fig6
-python evaluate.py --mode fig7
-python evaluate.py --mode all
+python evaluate.py --figure 4
+python evaluate.py --figure 5
+python evaluate.py --figure all
 ```
 
 ## Files Created (15 total)

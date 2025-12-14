@@ -11,7 +11,7 @@ def load_c3_model(
     checkpoint_dir,
     *,
     num_sensing_steps=None,
-    cdl_models=None,
+    scenarios=None,
 ):
     """
     Load a C3-only BeamAlignmentModel from a training checkpoint.
@@ -19,12 +19,12 @@ def load_c3_model(
     Notes:
       - Training checkpoints store both model and optimizer.
       - We initialize optimizer variables once before restore to avoid missing-slot issues.
-      - `cdl_models` can be overridden at evaluation time to compare channel variants.
+      - `scenarios` can be overridden at evaluation time to compare channel variants.
     """
     if num_sensing_steps is None:
         num_sensing_steps = config.T
-    if cdl_models is None:
-        cdl_models = config.CDL_MODELS
+    if scenarios is None:
+        scenarios = config.SCENARIOS
 
     model = BeamAlignmentModel(
         num_tx_antennas=config.NTX,
@@ -37,9 +37,17 @@ def load_c3_model(
         start_beam_index=getattr(config, "START_BEAM_INDEX", 0),
         random_start=getattr(config, "RANDOM_START", True),
         carrier_frequency=config.CARRIER_FREQUENCY,
-        cdl_models=cdl_models,
-        delay_spread_range=config.DELAY_SPREAD_RANGE,
-        ue_speed_range=config.UE_SPEED_RANGE,
+        scenarios=scenarios,
+        o2i_model=getattr(config, "O2I_MODEL", "low"),
+        enable_pathloss=getattr(config, "ENABLE_PATHLOSS", False),
+        enable_shadow_fading=getattr(config, "ENABLE_SHADOW_FADING", False),
+        distance_range_m=getattr(config, "DISTANCE_RANGE_M", (10.0, 200.0)),
+        ue_speed_range=getattr(config, "UE_SPEED_RANGE", (0.0, 30.0)),
+        indoor_probability=getattr(config, "INDOOR_PROBABILITY", 0.0),
+        ut_height_m=getattr(config, "UT_HEIGHT_M", 1.5),
+        bs_height_umi_m=getattr(config, "BS_HEIGHT_UMI_M", 10.0),
+        bs_height_uma_m=getattr(config, "BS_HEIGHT_UMA_M", 25.0),
+        bs_height_rma_m=getattr(config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
     # Build model variables

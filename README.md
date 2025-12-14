@@ -1,6 +1,6 @@
 # Deep Learning Based Adaptive Joint mmWave Beam Alignment
 
-TensorFlow implementation of the paper "Deep Learning Based Adaptive Joint mmWave Beam Alignment" using Sionna for mmWave channel modeling.
+TensorFlow implementation of the paper "Deep Learning Based Adaptive Joint mmWave Beam Alignment" using **Sionna** for **3GPP TR 38.901** scenario channel modeling (**UMi/UMa/RMa**).
 
 ## Overview
 
@@ -13,7 +13,8 @@ The implementation automatically detects and uses the best available hardware: *
 ## Features
 
 ✅ End-to-end trainable beam alignment system  
-✅ Geometric mmWave channel model with Sionna support  
+✅ TR 38.901 scenario channel model (UMi/UMa/RMa) via Sionna  
+✅ Explicit CIR → narrowband \(H\) mapping for paper measurement model  
 ✅ Learned BS codebook with DFT initialization  
 ✅ Adaptive UE RNN controller (GRU/LSTM)  
 ✅ Automatic device selection (CUDA > MPS > CPU)  
@@ -55,7 +56,7 @@ beam-alignment/
 ├── config.py                 # System configuration and hyperparameters
 ├── device_setup.py          # Automatic device detection (CUDA/MPS/CPU)
 ├── utils.py                 # Utility functions (array response, beamforming)
-├── channel_model.py         # mmWave geometric channel model
+├── channel_model.py         # TR 38.901 scenario channel model (UMi/UMa/RMa)
 ├── metrics.py               # Performance metrics and baselines
 ├── train.py                 # Training script
 ├── evaluate.py              # Evaluation and figure reproduction
@@ -97,15 +98,17 @@ Then open http://localhost:6006 in your browser.
 
 ### Evaluation
 
-Reproduce paper results:
+Generate paper-style plots (axes preserved):
 
 ```bash
-# Reproduce all figures
-python evaluate.py --checkpoint_dir ./checkpoints --output_dir ./results
+# Generate both figures
+python evaluate.py --figure all --num_samples 2000
 
-# Reproduce specific figure
-python evaluate.py --mode fig6  # Figure 6: BF gain vs SNR
-python evaluate.py --mode fig7  # Figure 7: BF gain vs sensing steps
+# Figure 4: scenario comparison vs SNR
+python evaluate.py --figure 4 --num_samples 2000
+
+# Figure 5: scenario comparison vs T
+python evaluate.py --figure 5 --num_samples 1000
 ```
 
 ## Configuration
@@ -114,15 +117,15 @@ Key parameters in `config.py`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `NTX` | 64 | Number of transmit antennas |
+| `NTX` | 32 | Number of transmit antennas |
 | `NRX` | 16 | Number of receive antennas |
-| `T` | 8 | Number of sensing steps |
+| `T` | 16 | Number of sensing steps |
 | `NCB` | 8 | BS codebook size |
 | `BATCH_SIZE` | 256 | Training batch size (fits ~15 GB VRAM) |
 | `EPOCHS` | 100 | Number of training epochs |
 | `LEARNING_RATE` | 0.001 | Initial learning rate |
 | `RNN_TYPE` | "GRU" | UE RNN type (GRU/LSTM) |
-| `RNN_HIDDEN_SIZE` | 128 | RNN hidden state size |
+| `RNN_HIDDEN_SIZE` | 384 | RNN hidden state size |
 
 ## Model Architecture
 

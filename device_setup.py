@@ -9,6 +9,58 @@ import os
 from tensorflow.python.client import device_lib
 
 
+def _ensure_xla_libdevice(verbose=True):
+    """
+    Ensure XLA can locate CUDA libdevice.
+
+    Some TensorFlow builds will JIT-compile simple GPU kernels with XLA. If the
+    CUDA toolkit is not installed (or not discoverable), XLA fails with:
+      "libdevice not found at ./libdevice.10.bc"
+
+    We mitigate this by creating a tiny "CUDA stub" directory containing
+    nvvm/libdevice/libdevice.10.bc (symlinked or copied from an existing package,
+    e.g., triton), then setting:
+      XLA_FLAGS=--xla_gpu_cuda_data_dir=<stub_root>
+    """
+    existing = os.environ.get("XLA_FLAGS", "")
+    if "--xla_gpu_cuda_data_dir=" in existing:
+        return
+
+    libdevice_src = None
+    try:
+        import triton  # type: ignore
+
+        triton_root = os.path.dirname(triton.__file__)
+        candidate = os.path.join(
+            triton_root, "backends", "nvidia", "lib", "libdevice.10.bc"
+        )
+        if os.path.exists(candidate):
+            libdevice_src = candidate
+    except Exception:
+        libdevice_src = None
+
+    if libdevice_src is None:
+        return
+
+    stub_root = os.path.join(os.path.dirname(__file__), ".cuda_stub")
+    libdevice_dir = os.path.join(stub_root, "nvvm", "libdevice")
+    os.makedirs(libdevice_dir, exist_ok=True)
+
+    dst = os.path.join(libdevice_dir, "libdevice.10.bc")
+    if not os.path.exists(dst):
+        try:
+            os.symlink(libdevice_src, dst)
+        except Exception:
+            import shutil
+
+            shutil.copyfile(libdevice_src, dst)
+
+    flag = f"--xla_gpu_cuda_data_dir={stub_root}"
+    os.environ["XLA_FLAGS"] = (existing + (" " if existing else "") + flag).strip()
+    if verbose:
+        print(f"✓ XLA libdevice configured via XLA_FLAGS ({stub_root})")
+
+
 def setup_device(verbose=True):
     """
     Sets up the best available device for TensorFlow operations.
@@ -21,6 +73,16 @@ def setup_device(verbose=True):
     Returns:
         tuple: (device_string, device_name)
     """
+    # Some TensorFlow installs enable XLA auto-jit by default, which can fail on
+    # systems missing CUDA "libdevice" (common on partial CUDA setups). We do not
+    # rely on XLA for correctness, so disable it for stability.
+    try:
+        tf.config.optimizer.set_jit(False)
+    except Exception:
+        pass
+
+    _ensure_xla_libdevice(verbose=verbose)
+
     device_name = "CPU"
     device_string = "/CPU:0"
 

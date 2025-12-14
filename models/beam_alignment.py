@@ -5,7 +5,7 @@ This module implements a complete deep learning-based beam alignment system for
 mmWave communication, integrating three main components:
 1. Base Station (BS) Controller: Manages transmit beamforming with learned codebook
 2. User Equipment (UE) Controller: Adaptively selects receive beams using RNN
-3. Channel Model: Generates standardized 3GPP TR 38.901 CDL channels
+3. Channel Model: Generates standardized 3GPP TR 38.901 scenario channels (UMi/UMa/RMa)
 
 System Architecture (C3-only):
     The beam alignment process operates in T+1 phases:
@@ -43,7 +43,7 @@ from config import Config
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from channel_model import SionnaCDLChannelModel, SIONNA_AVAILABLE
+from channel_model import SionnaScenarioChannelModel, SIONNA_AVAILABLE
 from utils import (
     compute_beamforming_gain,
     compute_beamforming_gain_db,
@@ -80,9 +80,17 @@ class BeamAlignmentModel(tf.keras.Model):
         start_beam_index=0,
         random_start=False,
         carrier_frequency=28e9,
-        cdl_models=None,
-        delay_spread_range=(10e-9, 300e-9),
+        scenarios=None,
+        o2i_model="low",
+        enable_pathloss=False,
+        enable_shadow_fading=False,
+        distance_range_m=(10.0, 200.0),
         ue_speed_range=(0.0, 30.0),
+        indoor_probability=0.0,
+        ut_height_m=1.5,
+        bs_height_umi_m=10.0,
+        bs_height_uma_m=25.0,
+        bs_height_rma_m=35.0,
         narrowband_method=None,
         narrowband_subcarrier=None,
         **kwargs,
@@ -98,11 +106,19 @@ class BeamAlignmentModel(tf.keras.Model):
             num_feedback: Number of feedback values (NFB)
             start_beam_index: Starting beam index (if not random)
             random_start: Whether to use random starting beam
-            carrier_frequency: Carrier frequency in Hz (for Sionna CDL)
-            cdl_models: List of CDL model names (e.g., ["A", "B", "C", "D", "E"])
-            delay_spread_range: (min, max) delay spread for CDL randomization
-            ue_speed_range: (min, max) UE speed for CDL randomization
-            narrowband_method: Narrowband reduction method for CDL ("center", "subcarrier", "mean_cfr")
+            carrier_frequency: Carrier frequency in Hz (for Sionna TR 38.901 scenarios)
+            scenarios: List of scenario names (e.g., ["UMi","UMa","RMa"])
+            o2i_model: O2I model for UMi/UMa ("low" or "high")
+            enable_pathloss: Enable pathloss in scenario channel
+            enable_shadow_fading: Enable shadow fading in scenario channel
+            distance_range_m: (min, max) UT-BS 2D distance range in meters
+            ue_speed_range: (min, max) UE speed range in m/s
+            indoor_probability: Probability a UT is indoor (affects O2I)
+            ut_height_m: UT height in meters
+            bs_height_umi_m: BS height for UMi in meters
+            bs_height_uma_m: BS height for UMa in meters
+            bs_height_rma_m: BS height for RMa in meters
+            narrowband_method: Narrowband reduction method ("center", "subcarrier", "mean_cfr")
             narrowband_subcarrier: Subcarrier index if narrowband_method=="subcarrier"
         """
         super().__init__(**kwargs)
@@ -114,21 +130,29 @@ class BeamAlignmentModel(tf.keras.Model):
         self.start_beam_index = start_beam_index
         self.random_start = random_start
 
-        # Create channel model - Sionna CDL or geometric
+        # Create channel model - Sionna TR 38.901 scenarios
         if not SIONNA_AVAILABLE:
             raise ImportError("Sionna must be installed for channel generation.")
-        print("  Using Sionna CDL channel model with domain randomization")
+        print("  Using Sionna TR 38.901 scenario channel model")
         if narrowband_method is None:
             narrowband_method = getattr(Config, "NARROWBAND_METHOD", "center")
         if narrowband_subcarrier is None:
             narrowband_subcarrier = getattr(Config, "NARROWBAND_SUBCARRIER", None)
-        self.channel_model = SionnaCDLChannelModel(
+        self.channel_model = SionnaScenarioChannelModel(
             num_tx_antennas=num_tx_antennas,
             num_rx_antennas=num_rx_antennas,
             carrier_frequency=carrier_frequency,
-            cdl_models=cdl_models,
-            delay_spread_range=delay_spread_range,
+            scenarios=scenarios,
+            o2i_model=o2i_model,
+            enable_pathloss=enable_pathloss,
+            enable_shadow_fading=enable_shadow_fading,
+            distance_range_m=distance_range_m,
             ue_speed_range=ue_speed_range,
+            indoor_probability=indoor_probability,
+            ut_height_m=ut_height_m,
+            bs_height_umi_m=bs_height_umi_m,
+            bs_height_uma_m=bs_height_uma_m,
+            bs_height_rma_m=bs_height_rma_m,
             fft_size=Config.RESOURCE_GRID_FFT_SIZE,
             num_ofdm_symbols=Config.RESOURCE_GRID_NUM_OFDM_SYMBOLS,
             subcarrier_spacing=Config.RESOURCE_GRID_SUBCARRIER_SPACING,

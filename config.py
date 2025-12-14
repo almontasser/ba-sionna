@@ -13,9 +13,9 @@ Configuration Categories:
    - NRX: Number of UE receive antennas (16)
    - Antenna spacing: Half-wavelength (λ/2)
 
-2. Channel Model Parameters (Sionna CDL):
+2. Channel Model Parameters (Sionna TR 38.901 scenarios):
    - CARRIER_FREQUENCY: 28 GHz (mmWave band)
-   - 3GPP TR 38.901 CDL profiles (A–E)
+   - 3GPP TR 38.901 stochastic scenarios (UMi/UMa/RMa)
 
 3. Beam Alignment Parameters:
    - T: Number of sensing steps (8)
@@ -69,15 +69,30 @@ class Config:
     NTX = 32  # Number of transmit antennas at BS (per arXiv paper)
     NRX = 16  # Number of receive antennas at UE
     
-    # ==================== Channel Model Parameters (Sionna CDL only) ====================
+    # ==================== Channel Model Parameters (Sionna TR 38.901 scenarios) ====================
     CARRIER_FREQUENCY = 28e9  # 28 GHz (mmWave)
     WAVELENGTH = 3e8 / CARRIER_FREQUENCY  # Speed of light / frequency
     ANTENNA_SPACING = WAVELENGTH / 2  # Half-wavelength spacing for ULA
     
     # Domain Randomization Parameters (for robust training)
-    CDL_MODELS = ["A", "B", "C", "D", "E"]  # All 3GPP CDL profiles
-    DELAY_SPREAD_RANGE = (10e-9, 300e-9)  # 10ns to 300ns (typical mmWave range)
+    # Scenarios: Urban Micro (UMi), Urban Macro (UMa), Rural Macro (RMa)
+    SCENARIOS = ["UMi", "UMa", "RMa"]
+    # O2I model for UMi/UMa (required by Sionna, even if indoor_probability=0)
+    O2I_MODEL = "low"  # {"low","high"}
+    # If enabled, SNR_RX depends on distance/pathloss; keep disabled for paper-style normalization.
+    ENABLE_PATHLOSS = False
+    ENABLE_SHADOW_FADING = False
+
+    # Topology sampling (1 UT + 1 BS per sample)
+    # NOTE: With pathloss disabled, this mostly affects LOS probability and cluster statistics.
+    DISTANCE_RANGE_M = (10.0, 200.0)  # UT-BS 2D distance range
     UE_SPEED_RANGE = (0.0, 30.0)  # 0 to 30 m/s (0 to 108 km/h)
+    INDOOR_PROBABILITY = 0.0  # probability the UT is indoor (affects O2I for UMi/UMa)
+    UT_HEIGHT_M = 1.5
+    BS_HEIGHT_UMI_M = 10.0
+    BS_HEIGHT_UMA_M = 25.0
+    BS_HEIGHT_RMA_M = 35.0
+
     # OFDM resource grid for Sionna channel generation
     RESOURCE_GRID_FFT_SIZE = 64
     RESOURCE_GRID_NUM_OFDM_SYMBOLS = 1
@@ -104,7 +119,7 @@ class Config:
     LOSS_TYPE = "paper"
 
     # ==================== Narrowband Mapping ====================
-    # How to reduce the CDL CIR/frequency response to a narrowband H used in y_t.
+    # How to reduce the TR 38.901 CIR/frequency response to a narrowband H used in y_t.
     # "center": use DC/center-subcarrier (paper-consistent flat fading)
     # "subcarrier": pick a specific subcarrier index
     # "mean_cfr": average CFR over all subcarriers (kept for ablations)
@@ -195,10 +210,14 @@ class Config:
         print(f"\nAntenna Arrays:")
         print(f"  BS Transmit Antennas (NTX): {cls.NTX}")
         print(f"  UE Receive Antennas (NRX): {cls.NRX}")
-        print(f"\nChannel (Sionna 3GPP TR 38.901 CDL):")
-        print(f"  CDL Profiles: {', '.join(['CDL-' + m for m in cls.CDL_MODELS])}")
-        print(f"  Delay Spread: {cls.DELAY_SPREAD_RANGE[0]*1e9:.0f}-{cls.DELAY_SPREAD_RANGE[1]*1e9:.0f} ns")
+        print(f"\nChannel (Sionna 3GPP TR 38.901 scenarios):")
+        print(f"  Scenarios: {', '.join(cls.SCENARIOS)}")
+        print(f"  O2I model (UMi/UMa): {cls.O2I_MODEL}")
+        print(f"  Pathloss: {'on' if cls.ENABLE_PATHLOSS else 'off'}")
+        print(f"  Shadow fading: {'on' if cls.ENABLE_SHADOW_FADING else 'off'}")
+        print(f"  Distance: {cls.DISTANCE_RANGE_M[0]:.0f}-{cls.DISTANCE_RANGE_M[1]:.0f} m")
         print(f"  UE Speed: {cls.UE_SPEED_RANGE[0]:.0f}-{cls.UE_SPEED_RANGE[1]:.0f} m/s")
+        print(f"  Indoor probability: {cls.INDOOR_PROBABILITY:.2f}")
         print(f"  Carrier Frequency: {cls.CARRIER_FREQUENCY/1e9:.0f} GHz")
         print(f"  Wavelength: {cls.WAVELENGTH*1000:.2f} mm")
         print(f"\nBeam Alignment:")
