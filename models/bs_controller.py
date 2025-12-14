@@ -41,7 +41,6 @@ References:
 """
 
 import tensorflow as tf
-import numpy as np
 from utils import normalize_beam, create_dft_codebook
 
 
@@ -74,32 +73,38 @@ class BSController(tf.keras.layers.Layer):
 
     def build(self, input_shape=None):
         """Build method to properly register variables with Keras"""
-        # Initialize codebook
-        if self.initialize_with_dft:
-            # Initialize with DFT codebook
-            dft_codebook = create_dft_codebook(self.codebook_size, self.num_antennas)
-            initial_codebook = dft_codebook.numpy()
-        else:
-            # Random initialization
-            initial_real = np.random.randn(self.codebook_size, self.num_antennas) / np.sqrt(self.num_antennas)
-            initial_imag = np.random.randn(self.codebook_size, self.num_antennas) / np.sqrt(self.num_antennas)
-            initial_codebook = initial_real + 1j * initial_imag
-
-        # Create trainable codebook using add_weight for proper Keras tracking
+        # Create trainable codebook using add_weight for proper Keras tracking.
+        # NOTE: Avoid `.numpy()` here so the layer can be built under graph mode.
         self.codebook_real = self.add_weight(
             name='codebook_real',
             shape=(self.codebook_size, self.num_antennas),
-            initializer=tf.constant_initializer(np.real(initial_codebook)),
+            initializer="zeros",
             trainable=self.trainable_codebook
         )
         self.codebook_imag = self.add_weight(
             name='codebook_imag',
             shape=(self.codebook_size, self.num_antennas),
-            initializer=tf.constant_initializer(np.imag(initial_codebook)),
+            initializer="zeros",
             trainable=self.trainable_codebook
         )
 
         self.built = True
+
+        if self.initialize_with_dft:
+            dft_codebook = create_dft_codebook(self.codebook_size, self.num_antennas)
+            dft_codebook = normalize_beam(tf.cast(dft_codebook, tf.complex64))
+            self.codebook_real.assign(tf.math.real(dft_codebook))
+            self.codebook_imag.assign(tf.math.imag(dft_codebook))
+        else:
+            scale = tf.sqrt(tf.cast(self.num_antennas, tf.float32))
+            initial_real = tf.random.normal(
+                [self.codebook_size, self.num_antennas], dtype=tf.float32
+            ) / scale
+            initial_imag = tf.random.normal(
+                [self.codebook_size, self.num_antennas], dtype=tf.float32
+            ) / scale
+            self.codebook_real.assign(initial_real)
+            self.codebook_imag.assign(initial_imag)
 
         # N2: FNN to map feedback to final beam (per paper)
         # Paper: "two to three layers of fully connected DNN"

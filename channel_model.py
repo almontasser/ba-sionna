@@ -8,6 +8,7 @@ Implemented:
 """
 
 import tensorflow as tf
+import numpy as np
 
 try:
     import sionna  # noqa: F401
@@ -299,9 +300,9 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
 
         return ut_loc, bs_loc, ut_orient, bs_orient, ut_vel, in_state
 
-    def _generate_scenario_block(self, scenario_idx, sample_indices):
+    def _generate_scenario_block(self, scenario_idx, num_samples):
         scenario = self.scenarios[scenario_idx]
-        num_i = tf.shape(sample_indices)[0]
+        num_i = tf.cast(num_samples, tf.int32)
 
         sl = self._scenario_models[scenario_idx]
         ut_loc, bs_loc, ut_or, bs_or, ut_vel, in_state = self._sample_topology(num_i, scenario)
@@ -327,46 +328,58 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         h_flat = _reduce_to_narrowband(h_freq, self.narrowband_method)
         return tf.cast(h_flat, tf.complex64)
 
-    def generate_channel(self, batch_size):
-        if isinstance(batch_size, tf.Tensor):
-            batch_size = tf.get_static_value(batch_size)
-            if batch_size is None:
-                raise ValueError("batch_size must be known at graph construction time")
+    def _generate_channel_eager(self, batch_size):
+        """
+        Eager-only channel generation.
+
+        Why this exists:
+          Some Sionna TR 38.901 scenario implementations use Python control flow
+          that is incompatible with TensorFlow graph tracing in certain TF/Sionna
+          combinations (e.g., Python `if` on a symbolic Tensor). To keep training
+          working under `@tf.function`, `generate_channel()` below routes graph-mode
+          calls through `tf.py_function`, which executes this method eagerly.
+        """
         batch_size = int(batch_size)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer.")
 
-        # Channel generation is pinned to CPU for robustness. In some TensorFlow
-        # GPU setups, XLA/libdevice resolution can fail for control-flow kernels
-        # used during topology sampling and TR 38.901 channel generation.
         with tf.device("/CPU:0"):
-            # Sample scenario per sample
-            scenario_idx = tf.random.uniform(
-                [batch_size], minval=0, maxval=self.num_scenarios, dtype=tf.int32
-            )
-
-            # Output tensor (scatter blocks into it)
+            scenario_idx = np.random.randint(0, self.num_scenarios, size=batch_size, dtype=np.int32)
             h_out = tf.zeros(
                 [batch_size, self.num_rx_antennas, self.num_tx_antennas],
                 dtype=tf.complex64,
             )
 
             for si in range(self.num_scenarios):
-                idxs = tf.where(tf.equal(scenario_idx, si))[:, 0]
-                num_i = tf.shape(idxs)[0]
-
-                def _true_fn(si=si, idxs=idxs):
-                    return self._generate_scenario_block(si, idxs)
-
-                def _false_fn():
-                    return tf.zeros(
-                        [0, self.num_rx_antennas, self.num_tx_antennas], tf.complex64
-                    )
-
-                h_block = tf.cond(num_i > 0, true_fn=_true_fn, false_fn=_false_fn)
-                h_out = tf.tensor_scatter_nd_update(
-                    h_out, tf.expand_dims(idxs, axis=1), h_block
-                )
+                idxs = np.nonzero(scenario_idx == si)[0]
+                if idxs.size == 0:
+                    continue
+                h_block = self._generate_scenario_block(int(si), int(idxs.size))
+                scatter_idx = tf.constant(idxs.reshape(-1, 1), dtype=tf.int32)
+                h_out = tf.tensor_scatter_nd_update(h_out, scatter_idx, h_block)
 
             return h_out
+
+    def generate_channel(self, batch_size):
+        if tf.executing_eagerly():
+            return self._generate_channel_eager(batch_size)
+
+        bs_tensor = (
+            batch_size if isinstance(batch_size, tf.Tensor) else tf.constant(int(batch_size), tf.int32)
+        )
+
+        h = tf.py_function(
+            func=lambda bs: self._generate_channel_eager(int(bs.numpy())),
+            inp=[bs_tensor],
+            Tout=tf.complex64,
+        )
+
+        static_bs = tf.get_static_value(bs_tensor)
+        if static_bs is None:
+            h.set_shape([None, self.num_rx_antennas, self.num_tx_antennas])
+        else:
+            h.set_shape([int(static_bs), self.num_rx_antennas, self.num_tx_antennas])
+        return h
 
     def call(self, batch_size):
         return self.generate_channel(batch_size)
