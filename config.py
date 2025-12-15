@@ -49,7 +49,7 @@ Usage:
 Note:
     The configuration is designed to match the paper's experimental setup.
     Changing these values may affect reproducibility of paper results.
-    
+
 References:
     Paper Section IV: Simulation Setup
     Paper Table I: System Parameters
@@ -60,16 +60,16 @@ import numpy as np
 
 class Config:
     """Configuration parameters for the beam alignment system"""
-    
+
     # ==================== Antenna Array Parameters ====================
     NTX = 32  # Number of transmit antennas at BS (per arXiv paper)
     NRX = 16  # Number of receive antennas at UE
-    
+
     # ==================== Channel Model Parameters (Sionna TR 38.901 scenarios) ====================
     CARRIER_FREQUENCY = 28e9  # 28 GHz (mmWave)
     WAVELENGTH = 3e8 / CARRIER_FREQUENCY  # Speed of light / frequency
     ANTENNA_SPACING = WAVELENGTH / 2  # Half-wavelength spacing for ULA
-    
+
     # Domain Randomization Parameters (for robust training)
     # Scenarios: Urban Micro (UMi), Urban Macro (UMa), Rural Macro (RMa)
     SCENARIOS = ["UMi", "UMa", "RMa"]
@@ -82,7 +82,7 @@ class Config:
     # Topology sampling (1 UT + 1 BS per sample)
     # NOTE: With pathloss disabled, this mostly affects LOS probability and cluster statistics.
     DISTANCE_RANGE_M = (10.0, 200.0)  # UT-BS 2D distance range
-    UE_SPEED_RANGE = (0.0, 30.0)  # 0 to 30 m/s (0 to 108 km/h)
+    UE_SPEED_RANGE = (30, 30)  # 30 to 30 m/s (108 to 108 km/h)
     INDOOR_PROBABILITY = 0.0  # probability the UT is indoor (affects O2I for UMi/UMa)
     UT_HEIGHT_M = 1.5
     BS_HEIGHT_UMI_M = 10.0
@@ -129,14 +129,14 @@ class Config:
     # This avoids `tf.py_function` inside `@tf.function`, which would otherwise force
     # the channel tensor to be produced on CPU and then copied to GPU.
     TRAIN_CHANNELS_OUTSIDE_GRAPH = True
-    
+
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
     NCB = 8  # Codebook size at BS (number of beams in learned codebook)
     # C3 default: random sweep start index i ~ Uniform{0..NCB-1}
     RANDOM_START = True
     START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
-    
+
     # ==================== Training Parameters ====================
     BATCH_SIZE = 256  # Reduced to fit ~15 GB VRAM comfortably
     EPOCHS = 100
@@ -157,16 +157,16 @@ class Config:
     # "mean_cfr": average CFR over all subcarriers (kept for ablations)
     NARROWBAND_METHOD = "center"
     NARROWBAND_SUBCARRIER = None  # int index if method=="subcarrier"
-    
+
     # SNR parameters
     SNR_TRAIN = 10.0  # Training SNR in dB (per arXiv paper)
     SNR_TEST_RANGE = np.arange(-10, 21, 2)  # Test SNR range for evaluation
     SNR_TARGET = 20.0  # Target SNR for satisfaction probability (dB) (per arXiv paper)
-    
+
     # Domain Randomization for SNR (set SNR_TRAIN_RANGE to enable)
     SNR_TRAIN_RANGE = (-5.0, 20.0)  # Random SNR range for robust training (dB)
     SNR_TRAIN_RANDOMIZE = True  # Enable SNR randomization during training
-    
+
     # UE Controller (RNN) parameters
     RNN_TYPE = "GRU"  # Paper uses GRU (2-layer Gated Recurrent Units)
     RNN_NUM_LAYERS = 2  # Paper: two recurrent layers
@@ -191,20 +191,20 @@ class Config:
     BS_FNN_HIDDEN_SIZES = (256, 256)
     BS_FNN_ACTIVATION = "gelu"
     BS_FNN_LAYER_NORM = True
-    
+
     # ==================== Data Generation ====================
     NUM_TRAIN_SAMPLES = 100000  # Increased from 50K for better training
     NUM_VAL_SAMPLES = 10000  # Increased proportionally
     NUM_TEST_SAMPLES = 10000
-    
+
     # ==================== Paths ====================
     CHECKPOINT_DIR = "./checkpoints"
     LOG_DIR = "./logs"
     RESULTS_DIR = "./results"
-    
+
     # ==================== Experiment Settings ====================
     RANDOM_SEED = 42
-    
+
     @classmethod
     def print_config(cls):
         """Print current configuration"""
@@ -219,9 +219,15 @@ class Config:
         print(f"  O2I model (UMi/UMa): {cls.O2I_MODEL}")
         print(f"  Pathloss: {'on' if cls.ENABLE_PATHLOSS else 'off'}")
         print(f"  Shadow fading: {'on' if cls.ENABLE_SHADOW_FADING else 'off'}")
-        print(f"  Distance: {cls.DISTANCE_RANGE_M[0]:.0f}-{cls.DISTANCE_RANGE_M[1]:.0f} m")
-        print(f"  UE Speed: {cls.UE_SPEED_RANGE[0]:.0f}-{cls.UE_SPEED_RANGE[1]:.0f} m/s")
-        print(f"  Time-varying channel: {'on' if getattr(cls, 'MOBILITY_ENABLE', False) else 'off'}")
+        print(
+            f"  Distance: {cls.DISTANCE_RANGE_M[0]:.0f}-{cls.DISTANCE_RANGE_M[1]:.0f} m"
+        )
+        print(
+            f"  UE Speed: {cls.UE_SPEED_RANGE[0]:.0f}-{cls.UE_SPEED_RANGE[1]:.0f} m/s"
+        )
+        print(
+            f"  Time-varying channel: {'on' if getattr(cls, 'MOBILITY_ENABLE', False) else 'off'}"
+        )
         if getattr(cls, "MOBILITY_ENABLE", False):
             nts = getattr(cls, "MOBILITY_NUM_TIME_SAMPLES", None)
             nts_eff = (cls.T + 1) if nts is None else int(nts)
@@ -231,7 +237,9 @@ class Config:
         print(f"  Indoor probability: {cls.INDOOR_PROBABILITY:.2f}")
         print(f"  Carrier Frequency: {cls.CARRIER_FREQUENCY/1e9:.0f} GHz")
         print(f"  Wavelength: {cls.WAVELENGTH*1000:.2f} mm")
-        print(f"  Channel gen device: {getattr(cls, 'CHANNEL_GENERATION_DEVICE', 'auto')}")
+        print(
+            f"  Channel gen device: {getattr(cls, 'CHANNEL_GENERATION_DEVICE', 'auto')}"
+        )
         print(
             f"  Train channels outside graph: {'on' if getattr(cls, 'TRAIN_CHANNELS_OUTSIDE_GRAPH', False) else 'off'}"
         )
@@ -246,7 +254,9 @@ class Config:
         print(f"  Epochs: {cls.EPOCHS}")
         print(f"  Learning Rate: {cls.LEARNING_RATE}")
         if cls.SNR_TRAIN_RANDOMIZE:
-            print(f"  Training SNR: {cls.SNR_TRAIN_RANGE[0]:.1f}-{cls.SNR_TRAIN_RANGE[1]:.1f} dB (randomized)")
+            print(
+                f"  Training SNR: {cls.SNR_TRAIN_RANGE[0]:.1f}-{cls.SNR_TRAIN_RANGE[1]:.1f} dB (randomized)"
+            )
         else:
             print(f"  Training SNR: {cls.SNR_TRAIN} dB (fixed)")
         print(f"\nUE Controller (RNN):")
@@ -254,8 +264,12 @@ class Config:
         print(f"  Layers: {getattr(cls, 'RNN_NUM_LAYERS', 2)}")
         print(f"  Hidden Size: {cls.RNN_HIDDEN_SIZE}")
         print(f"  Feedback Size (NFB): {cls.NUM_FEEDBACK}")
-        print(f"  Beam index encoding: {getattr(cls, 'UE_BEAM_INDEX_ENCODING', 'scalar')}")
-        print(f"  Include time feature: {getattr(cls, 'UE_INCLUDE_TIME_FEATURE', False)}")
+        print(
+            f"  Beam index encoding: {getattr(cls, 'UE_BEAM_INDEX_ENCODING', 'scalar')}"
+        )
+        print(
+            f"  Include time feature: {getattr(cls, 'UE_INCLUDE_TIME_FEATURE', False)}"
+        )
         print(f"  Input layer norm: {getattr(cls, 'UE_INPUT_LAYER_NORM', False)}")
         print(f"  Output layer norm: {getattr(cls, 'UE_OUTPUT_LAYER_NORM', False)}")
         print(f"  UE dropout: {getattr(cls, 'UE_DROPOUT_RATE', 0.0)}")

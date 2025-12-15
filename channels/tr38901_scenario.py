@@ -108,6 +108,10 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         if d_min <= 0.0 or d_max <= d_min:
             raise ValueError("distance_range_m must satisfy 0 < min < max.")
 
+        v_min, v_max = self.ue_speed_range
+        if v_min < 0.0 or v_max < v_min:
+            raise ValueError("ue_speed_range must satisfy 0 <= min <= max.")
+
         # Antenna arrays (ULA via single-panel array)
         self.bs_array = PanelArray(
             num_rows_per_panel=1,
@@ -229,7 +233,10 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
 
         # Velocities: random horizontal motion
         v_min, v_max = self.ue_speed_range
-        speed = tf.random.uniform([num_samples], v_min, v_max, dtype=tf.float32)
+        if v_min == v_max:
+            speed = tf.fill([num_samples], tf.constant(v_min, dtype=tf.float32))
+        else:
+            speed = tf.random.uniform([num_samples], v_min, v_max, dtype=tf.float32)
         v_ang = tf.random.uniform([num_samples], 0.0, 2.0 * 3.141592653589793, tf.float32)
         vx = speed * tf.cos(v_ang)
         vy = speed * tf.sin(v_ang)
