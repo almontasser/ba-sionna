@@ -278,10 +278,23 @@ def train(config, checkpoint_dir=None, log_dir=None):
                     # Pre-generate channel cache at epoch start
                     if epoch == start_epoch or not hasattr(train, '_channel_cache'):
                         print(f"Pre-generating {cache_size} channel batches for cache...")
-                        train._channel_cache = []
-                        for i in tqdm(range(cache_size), desc="Caching channels"):
+                        
+                        # Use parallel generation for faster cache warmup
+                        from concurrent.futures import ThreadPoolExecutor, as_completed
+                        import os
+                        
+                        num_workers = min(4, os.cpu_count() or 1)  # Use up to 4 workers
+                        
+                        def generate_one():
                             channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                            train._channel_cache.append(channels)
+                            return channels
+                        
+                        train._channel_cache = []
+                        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                            futures = [executor.submit(generate_one) for _ in range(cache_size)]
+                            for future in tqdm(as_completed(futures), total=cache_size, desc=f"Caching ({num_workers} workers)"):
+                                train._channel_cache.append(future.result())
+                        
                         print(f"✓ Channel cache ready ({cache_size} batches)")
                     
                     # Training using cached channels (random sampling)
