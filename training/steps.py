@@ -50,7 +50,9 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
         else:
             snr_linear = tf.pow(tf.constant(10.0, tf.float32), snr_db / 10.0)
             noise_power = 1.0 / snr_linear
-            results = model.execute_beam_alignment(channels, noise_power, training=True)
+            results = model.execute_beam_alignment(
+                channels, noise_power, training=True, snr_db=snr_db
+            )
             channels_final = results["channels_final"]
 
         loss = compute_loss(
@@ -99,7 +101,9 @@ def validate_step(model, batch_size, snr_db, channels=None):
     else:
         snr_linear = tf.pow(tf.constant(10.0, tf.float32), snr_db / 10.0)
         noise_power = 1.0 / snr_linear
-        results = model.execute_beam_alignment(channels, noise_power, training=False)
+        results = model.execute_beam_alignment(
+            channels, noise_power, training=False, snr_db=snr_db
+        )
         channels_final = results["channels_final"]
 
     loss = compute_loss(

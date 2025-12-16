@@ -50,6 +50,8 @@ import tensorflow as tf
 import os
 from datetime import datetime
 from tqdm import tqdm
+import io
+import contextlib
 
 from device_setup import setup_device, print_device_info
 from config import Config
@@ -151,13 +153,18 @@ def train(config, checkpoint_dir=None, log_dir=None):
     
     # TensorBoard writer
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = os.path.join(log_dir, f'train_{timestamp}')
-    val_log_dir = os.path.join(log_dir, f'val_{timestamp}')
-    
-    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-    val_summary_writer = tf.summary.create_file_writer(val_log_dir)
-    
-    print(f"\nTensorBoard logs: {log_dir}")
+    run_dir = os.path.join(log_dir, f"run_{timestamp}")
+    os.makedirs(run_dir, exist_ok=True)
+    summary_writer = tf.summary.create_file_writer(run_dir)
+
+    # Log the full config once so runs are self-describing in TensorBoard.
+    cfg_buf = io.StringIO()
+    with contextlib.redirect_stdout(cfg_buf):
+        config.print_config()
+    with summary_writer.as_default():
+        tf.summary.text("run/config", tf.constant(cfg_buf.getvalue()), step=0)
+
+    print(f"\nTensorBoard run: {run_dir}")
     print(f"Checkpoints: {checkpoint_dir}")
     
     with tf.device(device_string):
@@ -297,11 +304,14 @@ def train(config, checkpoint_dir=None, log_dir=None):
                 
                 # Log to TensorBoard
                 if step % 10 == 0:
-                    with train_summary_writer.as_default():
-                        tf.summary.scalar('loss', loss, step=global_step)
-                        tf.summary.scalar('bf_gain_db', bf_gain_db, step=global_step)
-                        tf.summary.scalar('gradient_norm', grad_norm, step=global_step)
-                        tf.summary.scalar('learning_rate', optimizer.learning_rate, step=global_step)
+                    with summary_writer.as_default():
+                        tf.summary.scalar("train/loss", loss, step=global_step)
+                        tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                        tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                        tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                        tf.summary.scalar(
+                            "train/learning_rate", optimizer.learning_rate, step=global_step
+                        )
             
             # Epoch statistics
             avg_loss = epoch_loss / steps_per_epoch
@@ -321,10 +331,12 @@ def train(config, checkpoint_dir=None, log_dir=None):
             print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
             
             # Log to TensorBoard
-            with val_summary_writer.as_default():
-                tf.summary.scalar('loss', val_metrics['val_loss'], step=epoch)
-                tf.summary.scalar('bf_gain_db', val_metrics['mean_bf_gain_db'], step=epoch)
-                tf.summary.scalar('satisfaction_prob', val_metrics['satisfaction_prob'], step=epoch)
+            with summary_writer.as_default():
+                tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
+                tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
+                tf.summary.scalar(
+                    "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
+                )
             
             # Save checkpoint
             if val_metrics['mean_bf_gain_db'] > best_val_bf_gain:
@@ -343,6 +355,7 @@ def train(config, checkpoint_dir=None, log_dir=None):
     print(f"Best validation BF gain: {best_val_bf_gain:.2f} dB")
     print(f"\nTo view training progress:")
     print(f"  tensorboard --logdir {log_dir}")
+    print(f"  (this run: {run_dir})")
 
 
 if __name__ == "__main__":

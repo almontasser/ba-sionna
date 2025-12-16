@@ -183,6 +183,10 @@ class Config:
     # "one_hot": one-hot encoding of x_t (often improves learning stability)
     UE_BEAM_INDEX_ENCODING = "one_hot"
     UE_INCLUDE_TIME_FEATURE = True  # include t/T as an extra input feature
+    UE_INCLUDE_SNR_FEATURE = True  # include snr_db (scaled) as an extra input feature
+    # Scale applied to snr_db before feeding to the UE RNN. Use a small value so
+    # the magnitude is comparable to other inputs.
+    UE_SNR_FEATURE_SCALE = 1.0 / 30.0
     UE_INPUT_LAYER_NORM = True
     UE_OUTPUT_LAYER_NORM = False
     UE_DROPOUT_RATE = 0.0
@@ -269,6 +273,9 @@ class Config:
         )
         print(
             f"  Include time feature: {getattr(cls, 'UE_INCLUDE_TIME_FEATURE', False)}"
+        )
+        print(
+            f"  Include SNR feature: {getattr(cls, 'UE_INCLUDE_SNR_FEATURE', False)}"
         )
         print(f"  Input layer norm: {getattr(cls, 'UE_INPUT_LAYER_NORM', False)}")
         print(f"  Output layer norm: {getattr(cls, 'UE_OUTPUT_LAYER_NORM', False)}")

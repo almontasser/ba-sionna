@@ -180,6 +180,8 @@ class BeamAlignmentModel(tf.keras.Model):
             codebook_size=codebook_size,
             beam_index_encoding=getattr(Config, "UE_BEAM_INDEX_ENCODING", "scalar"),
             include_time_feature=getattr(Config, "UE_INCLUDE_TIME_FEATURE", False),
+            include_snr_feature=getattr(Config, "UE_INCLUDE_SNR_FEATURE", False),
+            snr_feature_scale=getattr(Config, "UE_SNR_FEATURE_SCALE", 1.0 / 30.0),
             input_layer_norm=getattr(Config, "UE_INPUT_LAYER_NORM", False),
             output_layer_norm=getattr(Config, "UE_OUTPUT_LAYER_NORM", False),
             dropout_rate=getattr(Config, "UE_DROPOUT_RATE", 0.0),
@@ -212,6 +214,7 @@ class BeamAlignmentModel(tf.keras.Model):
             y0,
             x0,
             state0,
+            snr_db=tf.zeros([], dtype=tf.float32),
             step_index=0,
             num_steps=int(max(self.num_sensing_steps, 1)),
             training=False,
@@ -252,6 +255,7 @@ class BeamAlignmentModel(tf.keras.Model):
         start_idx=None,
         measurement_ablation=None,
         shuffle_perm=None,
+        snr_db=None,
     ):
         """
         Execute the beam alignment process.
@@ -281,6 +285,13 @@ class BeamAlignmentModel(tf.keras.Model):
         """
         batch_size = tf.shape(channels)[0]
         T = self.num_sensing_steps
+        if snr_db is None and getattr(self.ue_controller, "include_snr_feature", False):
+            noise_power_f = tf.cast(noise_power, tf.float32)
+            snr_db = (
+                10.0
+                * tf.math.log(1.0 / (noise_power_f + 1e-20))
+                / tf.math.log(tf.constant(10.0, tf.float32))
+            )
         channels_rank = channels.shape.rank
         if channels_rank == 3:
             # Static channel within the episode: H is constant for all t.
@@ -368,6 +379,7 @@ class BeamAlignmentModel(tf.keras.Model):
                     y_prev,
                     x_prev,
                     ue_state,
+                    snr_db=snr_db,
                     step_index=t - 1,
                     num_steps=T,
                     training=training,
@@ -412,6 +424,7 @@ class BeamAlignmentModel(tf.keras.Model):
             y_last,
             x_last,
             ue_state,
+            snr_db=snr_db,
             step_index=T - 1,
             num_steps=T,
             training=training,
@@ -463,7 +476,9 @@ class BeamAlignmentModel(tf.keras.Model):
         noise_power = 1.0 / snr_linear
 
         # Execute beam alignment
-        results = self.execute_beam_alignment(channels, noise_power, training=training)
+        results = self.execute_beam_alignment(
+            channels, noise_power, training=training, snr_db=snr_db
+        )
 
         # Add channel(s) to results:
         # - "channels" is kept as the final channel snapshot for compatibility with

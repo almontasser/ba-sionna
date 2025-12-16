@@ -49,6 +49,7 @@ python evaluate.py --figure all --num_samples 2000
 ## Useful docs
 
 - `VALIDATION_GUIDE.md` (NaNs, loss vs gain, checkpoint issues)
+- `TENSORBOARD.md` (how to monitor training runs)
 - `IMPROVEMENTS_OVER_ARXIV_2401_13587v1.md` (what differs vs the paper baseline)
 - `MOBILITY_TR38901_TIME_VARIATION.md` (how mobility is modeled here)
 - `NN_ARCHITECTURE_AND_TUNING.md` (RNN/FNN sizing and tuning notes)

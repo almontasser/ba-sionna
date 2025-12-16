@@ -63,6 +63,8 @@ class UEController(tf.keras.Model):
                  codebook_size=8,
                  beam_index_encoding="scalar",
                  include_time_feature=False,
+                 include_snr_feature=False,
+                 snr_feature_scale=1.0 / 30.0,
                  input_layer_norm=False,
                  output_layer_norm=False,
                  dropout_rate=0.0,
@@ -86,6 +88,8 @@ class UEController(tf.keras.Model):
         self.codebook_size = codebook_size
         self.beam_index_encoding = str(beam_index_encoding).lower()
         self.include_time_feature = bool(include_time_feature)
+        self.include_snr_feature = bool(include_snr_feature)
+        self.snr_feature_scale = float(snr_feature_scale)
         self.input_layer_norm = bool(input_layer_norm)
         self.output_layer_norm = bool(output_layer_norm)
         self.dropout_rate = float(dropout_rate)
@@ -195,6 +199,7 @@ class UEController(tf.keras.Model):
         received_signal,
         beam_index,
         state,
+        snr_db=None,
         *,
         step_index=None,
         num_steps=None,
@@ -242,6 +247,17 @@ class UEController(tf.keras.Model):
                 t_norm = float(step_index) / denom
             t_feat = tf.fill([batch_size, 1], tf.constant(t_norm, tf.float32))
             features.append(t_feat)
+
+        if self.include_snr_feature:
+            if snr_db is None:
+                raise ValueError("snr_db must be provided when include_snr_feature=True")
+            snr_db_f = tf.cast(snr_db, tf.float32)
+            if snr_db_f.shape.rank == 0:
+                snr_feat = tf.fill([batch_size, 1], snr_db_f)
+            else:
+                snr_feat = tf.reshape(snr_db_f, [batch_size, 1])
+            snr_feat = snr_feat * tf.constant(self.snr_feature_scale, tf.float32)
+            features.append(snr_feat)
 
         rnn_output = tf.concat(features, axis=-1)
         if self.input_ln is not None:
@@ -291,7 +307,7 @@ class UEController(tf.keras.Model):
 
         return combining_vector, feedback, new_states
     
-    def call(self, received_signals, beam_indices, initial_state=None, training=False):
+    def call(self, received_signals, beam_indices, initial_state=None, training=False, snr_db=None):
         """
         Process a sequence of sensing steps.
         
@@ -331,6 +347,7 @@ class UEController(tf.keras.Model):
                 y_t,
                 x_t,
                 state,
+                snr_db=snr_db,
                 step_index=t,
                 num_steps=int(T),
                 training=training,

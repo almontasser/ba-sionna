@@ -26,6 +26,8 @@ Implementation summary (`models/ue_controller.py`):
   - `Re(y_t)` and `Im(y_t)`
   - beam index feature for `x_t`:
     - `Config.UE_BEAM_INDEX_ENCODING = "one_hot"` (default) or `"scalar"`
+  - optional SNR feature:
+    - `Config.UE_INCLUDE_SNR_FEATURE = True` (default): adds `snr_db * Config.UE_SNR_FEATURE_SCALE`
   - optional time feature:
     - `Config.UE_INCLUDE_TIME_FEATURE = True` (default): adds `t/(T-1)`
   - optional input layer norm:
@@ -97,4 +99,3 @@ For time-varying channels:
 - If learning is unstable:
   - try a smaller SNR range during early training (curriculum),
   - reduce `UE_SPEED_RANGE` or reduce the per-step time increment by increasing `MOBILITY_SAMPLING_FREQUENCY_HZ`.
-

@@ -101,6 +101,8 @@ tensorboard --logdir ./logs
 
 Then open http://localhost:6006 in your browser.
 
+See `TENSORBOARD.md` for details (remote usage, tags, run directory layout).
+
 ### Evaluation
 
 Generate paper-style plots (axes preserved):
