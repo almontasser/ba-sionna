@@ -491,6 +491,12 @@ if __name__ == "__main__":
         choices=[0, 1],
         help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
     )
+    parser.add_argument(
+        '--channel_cache_size',
+        type=int,
+        default=None,
+        help='Number of channel batches to pre-generate and cache (0=disabled). Default: 100.',
+    )
     parser.add_argument('--test_mode', action='store_true', help='Run in test mode (1 epoch)')
     
     args = parser.parse_args()
@@ -522,6 +528,8 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
     if args.xla_jit is not None:
         Config.XLA_JIT_COMPILE = bool(args.xla_jit)
+    if args.channel_cache_size is not None:
+        Config.CHANNEL_CACHE_SIZE = args.channel_cache_size
     
     if args.test_mode:
         Config.EPOCHS = 1
