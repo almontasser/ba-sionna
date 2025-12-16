@@ -268,50 +268,100 @@ def train(config, checkpoint_dir=None, log_dir=None):
             epoch_loss = 0.0
             epoch_bf_gain = 0.0
             
-            pbar = tqdm(range(steps_per_epoch), desc="Training")
-            for step in pbar:
-                # Sample SNR for this batch (domain randomization)
-                snr_db = sample_snr(config)
-
-                channels = None
-                if getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
-                    channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-
-                loss, bf_gain_db, grad_norm = train_step(
-                    model,
-                    optimizer,
-                    config.BATCH_SIZE,
-                    snr_db,
-                    channels=channels,
-                )
+            # Create channel generator with prefetching to overlap CPU channel generation with GPU training
+            if getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
+                def channel_generator():
+                    """Generator that yields channel batches."""
+                    for _ in range(steps_per_epoch):
+                        channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+                        snr = sample_snr(config)
+                        yield channels, snr
                 
-                epoch_loss += loss.numpy()
-                epoch_bf_gain += bf_gain_db.numpy()
-                global_step += 1
+                # Determine output signature based on mobility settings
+                if getattr(config, "MOBILITY_ENABLE", False):
+                    nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
+                    num_time_samples = int(nts) if nts is not None else int(config.T + 1)
+                    channel_shape = [config.BATCH_SIZE, num_time_samples, config.NRX, config.NTX]
+                else:
+                    channel_shape = [config.BATCH_SIZE, config.NRX, config.NTX]
                 
-                # Update progress bar
-                # NOTE: With LOSS_TYPE="paper", the optimized objective is the
-                # mean normalized gain: gain_norm = |w^H H f|^2 / ||H||_F^2.
-                # Since loss = -mean(gain_norm), we can report gain_norm ≈ -loss.
-                gain_norm = -loss
-                pbar_dict = {
-                    'loss': f'{loss.numpy():.4f}',
-                    'gain_norm': f'{gain_norm.numpy():.4f}',
-                    'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
-                    'grad_norm': f'{grad_norm.numpy():.3f}'
-                }
-                pbar.set_postfix(pbar_dict)
+                channel_dataset = tf.data.Dataset.from_generator(
+                    channel_generator,
+                    output_signature=(
+                        tf.TensorSpec(shape=channel_shape, dtype=tf.complex64),
+                        tf.TensorSpec(shape=[], dtype=tf.float32),
+                    )
+                ).prefetch(tf.data.AUTOTUNE)  # Prefetch next batch while GPU trains
                 
-                # Log to TensorBoard
-                if step % 10 == 0:
-                    with summary_writer.as_default():
-                        tf.summary.scalar("train/loss", loss, step=global_step)
-                        tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                        tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                        tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
-                        tf.summary.scalar(
-                            "train/learning_rate", optimizer.learning_rate, step=global_step
-                        )
+                pbar = tqdm(enumerate(channel_dataset), total=steps_per_epoch, desc="Training")
+                for step, (channels, snr_db) in pbar:
+                    loss, bf_gain_db, grad_norm = train_step(
+                        model,
+                        optimizer,
+                        config.BATCH_SIZE,
+                        snr_db,
+                        channels=channels,
+                    )
+                    
+                    epoch_loss += loss.numpy()
+                    epoch_bf_gain += bf_gain_db.numpy()
+                    global_step += 1
+                    
+                    # Update progress bar
+                    gain_norm = -loss
+                    pbar_dict = {
+                        'loss': f'{loss.numpy():.4f}',
+                        'gain_norm': f'{gain_norm.numpy():.4f}',
+                        'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
+                        'grad_norm': f'{grad_norm.numpy():.3f}'
+                    }
+                    pbar.set_postfix(pbar_dict)
+                    
+                    # Log to TensorBoard
+                    if step % 10 == 0:
+                        with summary_writer.as_default():
+                            tf.summary.scalar("train/loss", loss, step=global_step)
+                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                            tf.summary.scalar(
+                                "train/learning_rate", optimizer.learning_rate, step=global_step
+                            )
+            else:
+                # Fallback: generate channels inside the training step (legacy mode)
+                pbar = tqdm(range(steps_per_epoch), desc="Training")
+                for step in pbar:
+                    snr_db = sample_snr(config)
+                    loss, bf_gain_db, grad_norm = train_step(
+                        model,
+                        optimizer,
+                        config.BATCH_SIZE,
+                        snr_db,
+                        channels=None,
+                    )
+                    
+                    epoch_loss += loss.numpy()
+                    epoch_bf_gain += bf_gain_db.numpy()
+                    global_step += 1
+                    
+                    gain_norm = -loss
+                    pbar_dict = {
+                        'loss': f'{loss.numpy():.4f}',
+                        'gain_norm': f'{gain_norm.numpy():.4f}',
+                        'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
+                        'grad_norm': f'{grad_norm.numpy():.3f}'
+                    }
+                    pbar.set_postfix(pbar_dict)
+                    
+                    if step % 10 == 0:
+                        with summary_writer.as_default():
+                            tf.summary.scalar("train/loss", loss, step=global_step)
+                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                            tf.summary.scalar(
+                                "train/learning_rate", optimizer.learning_rate, step=global_step
+                            )
             
             # Epoch statistics
             avg_loss = epoch_loss / steps_per_epoch
