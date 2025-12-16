@@ -270,76 +270,97 @@ def train(config, checkpoint_dir=None, log_dir=None):
             epoch_loss = 0.0
             epoch_bf_gain = 0.0
             
-            # Use background thread producer for channel generation to overlap with GPU training
+            # Use channel caching for faster training
             if getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
-                # Queue buffer for pre-generated channel batches
-                QUEUE_SIZE = 4  # Buffer 4 batches ahead
-                channel_queue = queue.Queue(maxsize=QUEUE_SIZE)
-                stop_event = threading.Event()
+                cache_size = getattr(config, "CHANNEL_CACHE_SIZE", 0)
                 
-                def producer():
-                    """Background thread that generates channels ahead of training."""
-                    for _ in range(steps_per_epoch):
-                        if stop_event.is_set():
-                            break
-                        try:
+                if cache_size > 0:
+                    # Pre-generate channel cache at epoch start
+                    if epoch == start_epoch or not hasattr(train, '_channel_cache'):
+                        print(f"Pre-generating {cache_size} channel batches for cache...")
+                        train._channel_cache = []
+                        for i in tqdm(range(cache_size), desc="Caching channels"):
                             channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                            snr = sample_snr(config)
-                            channel_queue.put((channels, snr), timeout=60)
-                        except Exception as e:
-                            print(f"Channel generation error: {e}")
-                            break
-                    # Signal end of data
-                    channel_queue.put(None)
-                
-                # Start producer thread
-                producer_thread = threading.Thread(target=producer, daemon=True)
-                producer_thread.start()
-                
-                pbar = tqdm(range(steps_per_epoch), desc="Training")
-                for step in pbar:
-                    # Get pre-generated channels from queue
-                    batch = channel_queue.get()
-                    if batch is None:
-                        break
-                    channels, snr_db = batch
+                            train._channel_cache.append(channels)
+                        print(f"✓ Channel cache ready ({cache_size} batches)")
                     
-                    loss, bf_gain_db, grad_norm = train_step(
-                        model,
-                        optimizer,
-                        config.BATCH_SIZE,
-                        snr_db,
-                        channels=channels,
-                    )
-                    
-                    epoch_loss += loss.numpy()
-                    epoch_bf_gain += bf_gain_db.numpy()
-                    global_step += 1
-                    
-                    # Update progress bar
-                    gain_norm = -loss
-                    pbar_dict = {
-                        'loss': f'{loss.numpy():.4f}',
-                        'gain_norm': f'{gain_norm.numpy():.4f}',
-                        'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
-                        'grad_norm': f'{grad_norm.numpy():.3f}'
-                    }
-                    pbar.set_postfix(pbar_dict)
-                    
-                    # Log to TensorBoard
-                    if step % 10 == 0:
-                        with summary_writer.as_default():
-                            tf.summary.scalar("train/loss", loss, step=global_step)
-                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
-                            tf.summary.scalar(
-                                "train/learning_rate", optimizer.learning_rate, step=global_step
-                            )
-                
-                # Cleanup
-                stop_event.set()
-                producer_thread.join(timeout=5)
+                    # Training using cached channels (random sampling)
+                    pbar = tqdm(range(steps_per_epoch), desc="Training")
+                    for step in pbar:
+                        # Random sample from cache
+                        cache_idx = tf.random.uniform([], 0, cache_size, dtype=tf.int32).numpy()
+                        channels = train._channel_cache[cache_idx]
+                        snr_db = sample_snr(config)
+                        
+                        loss, bf_gain_db, grad_norm = train_step(
+                            model,
+                            optimizer,
+                            config.BATCH_SIZE,
+                            snr_db,
+                            channels=channels,
+                        )
+                        
+                        epoch_loss += loss.numpy()
+                        epoch_bf_gain += bf_gain_db.numpy()
+                        global_step += 1
+                        
+                        # Update progress bar
+                        gain_norm = -loss
+                        pbar_dict = {
+                            'loss': f'{loss.numpy():.4f}',
+                            'gain_norm': f'{gain_norm.numpy():.4f}',
+                            'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
+                            'grad_norm': f'{grad_norm.numpy():.3f}'
+                        }
+                        pbar.set_postfix(pbar_dict)
+                        
+                        # Log to TensorBoard
+                        if step % 10 == 0:
+                            with summary_writer.as_default():
+                                tf.summary.scalar("train/loss", loss, step=global_step)
+                                tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                                tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                                tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                                tf.summary.scalar(
+                                    "train/learning_rate", optimizer.learning_rate, step=global_step
+                                )
+                else:
+                    # No caching - generate fresh channels each iteration (slow but max diversity)
+                    pbar = tqdm(range(steps_per_epoch), desc="Training")
+                    for step in pbar:
+                        channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+                        snr_db = sample_snr(config)
+                        
+                        loss, bf_gain_db, grad_norm = train_step(
+                            model,
+                            optimizer,
+                            config.BATCH_SIZE,
+                            snr_db,
+                            channels=channels,
+                        )
+                        
+                        epoch_loss += loss.numpy()
+                        epoch_bf_gain += bf_gain_db.numpy()
+                        global_step += 1
+                        
+                        gain_norm = -loss
+                        pbar_dict = {
+                            'loss': f'{loss.numpy():.4f}',
+                            'gain_norm': f'{gain_norm.numpy():.4f}',
+                            'BF_gain': f'{bf_gain_db.numpy():.2f} dB',
+                            'grad_norm': f'{grad_norm.numpy():.3f}'
+                        }
+                        pbar.set_postfix(pbar_dict)
+                        
+                        if step % 10 == 0:
+                            with summary_writer.as_default():
+                                tf.summary.scalar("train/loss", loss, step=global_step)
+                                tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                                tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                                tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                                tf.summary.scalar(
+                                    "train/learning_rate", optimizer.learning_rate, step=global_step
+                                )
             else:
                 # Fallback: generate channels inside the training step (legacy mode)
                 pbar = tqdm(range(steps_per_epoch), desc="Training")
@@ -470,6 +491,12 @@ if __name__ == "__main__":
         choices=[0, 1],
         help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
     )
+    parser.add_argument(
+        '--channel_cache_size',
+        type=int,
+        default=None,
+        help='Number of channel batches to pre-generate and cache (0=disabled). Default: 100.',
+    )
     parser.add_argument('--test_mode', action='store_true', help='Run in test mode (1 epoch)')
     
     args = parser.parse_args()
@@ -501,6 +528,8 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
     if args.xla_jit is not None:
         Config.XLA_JIT_COMPILE = bool(args.xla_jit)
+    if args.channel_cache_size is not None:
+        Config.CHANNEL_CACHE_SIZE = args.channel_cache_size
     
     if args.test_mode:
         Config.EPOCHS = 1
