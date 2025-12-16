@@ -279,20 +279,27 @@ def train(config, checkpoint_dir=None, log_dir=None):
                     if epoch == start_epoch or not hasattr(train, '_channel_cache'):
                         print(f"Pre-generating {cache_size} channel batches for cache...")
                         
-                        # Use parallel generation for faster cache warmup
-                        from concurrent.futures import ThreadPoolExecutor, as_completed
+                        # Try multiprocessing for faster generation
+                        use_multiprocessing = getattr(config, 'CHANNEL_CACHE_PARALLEL', True)
+                        num_workers = min(4, os.cpu_count() or 1)
                         
-                        num_workers = min(4, os.cpu_count() or 1)  # Use up to 4 workers
+                        if use_multiprocessing and num_workers > 1:
+                            try:
+                                from channel_worker import generate_channels_multiprocess
+                                print(f"  Using {num_workers} worker processes...")
+                                train._channel_cache = generate_channels_multiprocess(
+                                    config, cache_size, config.BATCH_SIZE, num_workers
+                                )
+                            except Exception as e:
+                                print(f"  Multiprocessing failed ({e}), falling back to sequential...")
+                                use_multiprocessing = False
                         
-                        def generate_one():
-                            channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                            return channels
-                        
-                        train._channel_cache = []
-                        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                            futures = [executor.submit(generate_one) for _ in range(cache_size)]
-                            for future in tqdm(as_completed(futures), total=cache_size, desc=f"Caching ({num_workers} workers)"):
-                                train._channel_cache.append(future.result())
+                        if not use_multiprocessing or num_workers <= 1:
+                            # Sequential fallback
+                            train._channel_cache = []
+                            for _ in tqdm(range(cache_size), desc="Caching channels"):
+                                channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+                                train._channel_cache.append(channels)
                         
                         print(f"✓ Channel cache ready ({cache_size} batches)")
                     
