@@ -52,6 +52,8 @@ from datetime import datetime
 from tqdm import tqdm
 import io
 import contextlib
+import threading
+import queue
 
 from device_setup import setup_device, print_device_info
 from config import Config
@@ -268,33 +270,40 @@ def train(config, checkpoint_dir=None, log_dir=None):
             epoch_loss = 0.0
             epoch_bf_gain = 0.0
             
-            # Create channel generator with prefetching to overlap CPU channel generation with GPU training
+            # Use background thread producer for channel generation to overlap with GPU training
             if getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
-                def channel_generator():
-                    """Generator that yields channel batches."""
+                # Queue buffer for pre-generated channel batches
+                QUEUE_SIZE = 4  # Buffer 4 batches ahead
+                channel_queue = queue.Queue(maxsize=QUEUE_SIZE)
+                stop_event = threading.Event()
+                
+                def producer():
+                    """Background thread that generates channels ahead of training."""
                     for _ in range(steps_per_epoch):
-                        channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                        snr = sample_snr(config)
-                        yield channels, snr
+                        if stop_event.is_set():
+                            break
+                        try:
+                            channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+                            snr = sample_snr(config)
+                            channel_queue.put((channels, snr), timeout=60)
+                        except Exception as e:
+                            print(f"Channel generation error: {e}")
+                            break
+                    # Signal end of data
+                    channel_queue.put(None)
                 
-                # Determine output signature based on mobility settings
-                if getattr(config, "MOBILITY_ENABLE", False):
-                    nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
-                    num_time_samples = int(nts) if nts is not None else int(config.T + 1)
-                    channel_shape = [config.BATCH_SIZE, num_time_samples, config.NRX, config.NTX]
-                else:
-                    channel_shape = [config.BATCH_SIZE, config.NRX, config.NTX]
+                # Start producer thread
+                producer_thread = threading.Thread(target=producer, daemon=True)
+                producer_thread.start()
                 
-                channel_dataset = tf.data.Dataset.from_generator(
-                    channel_generator,
-                    output_signature=(
-                        tf.TensorSpec(shape=channel_shape, dtype=tf.complex64),
-                        tf.TensorSpec(shape=[], dtype=tf.float32),
-                    )
-                ).prefetch(tf.data.AUTOTUNE)  # Prefetch next batch while GPU trains
-                
-                pbar = tqdm(enumerate(channel_dataset), total=steps_per_epoch, desc="Training")
-                for step, (channels, snr_db) in pbar:
+                pbar = tqdm(range(steps_per_epoch), desc="Training")
+                for step in pbar:
+                    # Get pre-generated channels from queue
+                    batch = channel_queue.get()
+                    if batch is None:
+                        break
+                    channels, snr_db = batch
+                    
                     loss, bf_gain_db, grad_norm = train_step(
                         model,
                         optimizer,
@@ -327,6 +336,10 @@ def train(config, checkpoint_dir=None, log_dir=None):
                             tf.summary.scalar(
                                 "train/learning_rate", optimizer.learning_rate, step=global_step
                             )
+                
+                # Cleanup
+                stop_event.set()
+                producer_thread.join(timeout=5)
             else:
                 # Fallback: generate channels inside the training step (legacy mode)
                 pbar = tqdm(range(steps_per_epoch), desc="Training")
