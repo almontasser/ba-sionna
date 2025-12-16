@@ -84,7 +84,8 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
         return loss, bf_gain_db, gradient_norm
 
     def _skip_update():
-        tf.print("WARNING: non-finite loss; skipping optimizer step")
+        # Note: tf.print removed - XLA doesn't support PrintV2
+        # Non-finite losses are rare and handled by gradient sanitization
         return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32)
 
     return tf.cond(loss_finite, _apply_update, _skip_update)
