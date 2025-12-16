@@ -73,11 +73,14 @@ def setup_device(verbose=True):
     Returns:
         tuple: (device_string, device_name)
     """
-    # Some TensorFlow installs enable XLA auto-jit by default, which can fail on
-    # systems missing CUDA "libdevice" (common on partial CUDA setups). We do not
-    # rely on XLA for correctness, so disable it for stability.
+    # XLA JIT compilation can provide significant speedups (1.5-2x) but may fail on
+    # systems missing CUDA "libdevice". Controlled by Config.XLA_JIT_COMPILE.
     try:
-        tf.config.optimizer.set_jit(False)
+        from config import Config
+        if not getattr(Config, 'XLA_JIT_COMPILE', True):
+            tf.config.optimizer.set_jit(False)
+            if verbose:
+                print("⚠ XLA JIT disabled via Config.XLA_JIT_COMPILE=False")
     except Exception:
         pass
 

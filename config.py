@@ -130,6 +130,10 @@ class Config:
     # the channel tensor to be produced on CPU and then copied to GPU.
     TRAIN_CHANNELS_OUTSIDE_GRAPH = True
 
+    # Enable XLA JIT compilation for training steps.
+    # Provides 1.5-2x speedup on GPU. Disable if you encounter XLA compilation errors.
+    XLA_JIT_COMPILE = True
+
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
     NCB = 8  # Codebook size at BS (number of beams in learned codebook)

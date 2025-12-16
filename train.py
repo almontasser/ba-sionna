@@ -400,6 +400,13 @@ if __name__ == "__main__":
                        help='Number of warm-up epochs with linear LR ramp (0 = no warm-up)')
     parser.add_argument('--snr_train_range', type=str, default=None,
                        help='Training SNR range "low,high" in dB (e.g., "0,10")')
+    parser.add_argument(
+        '--xla_jit',
+        type=int,
+        default=None,
+        choices=[0, 1],
+        help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
+    )
     parser.add_argument('--test_mode', action='store_true', help='Run in test mode (1 epoch)')
     
     args = parser.parse_args()
@@ -429,6 +436,8 @@ if __name__ == "__main__":
             Config.SNR_TRAIN_RANGE = (float(low), float(high))
         except Exception as e:
             raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
+    if args.xla_jit is not None:
+        Config.XLA_JIT_COMPILE = bool(args.xla_jit)
     
     if args.test_mode:
         Config.EPOCHS = 1

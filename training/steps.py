@@ -25,7 +25,7 @@ def sample_snr(config):
     return tf.constant(config.SNR_TRAIN, dtype=tf.float32)
 
 
-@tf.function(reduce_retracing=True)
+@tf.function(reduce_retracing=True, jit_compile=True)
 def train_step(model, optimizer, batch_size, snr_db, channels=None):
     """
     Execute one training step with domain randomization.
@@ -90,7 +90,7 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
     return tf.cond(loss_finite, _apply_update, _skip_update)
 
 
-@tf.function(reduce_retracing=True)
+@tf.function(reduce_retracing=True, jit_compile=True)
 def validate_step(model, batch_size, snr_db, channels=None):
     """Single validation step (graph-compiled for speed)."""
     snr_db = tf.cast(snr_db, tf.float32)
