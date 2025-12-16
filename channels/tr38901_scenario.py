@@ -314,6 +314,91 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         h_seq = tf.transpose(h_flat, perm=[0, 3, 1, 2])
         return tf.cast(h_seq, tf.complex64)
 
+    def _generate_channel_graph(self, batch_size, num_time_samples=1, sampling_frequency=1.0):
+        """
+        Graph-compatible channel generation using pure TensorFlow ops.
+        
+        This replaces _generate_channel_eager for use inside @tf.function.
+        Uses tf.random instead of np.random. The scenario loop is unrolled at
+        graph construction time since num_scenarios is known statically.
+        """
+        batch_size = tf.cast(batch_size, tf.int32)
+        num_time_samples = int(num_time_samples)
+        sampling_frequency = float(sampling_frequency)
+        
+        # TF-native scenario selection (replaces np.random.randint)
+        scenario_idx = tf.random.uniform(
+            [batch_size], minval=0, maxval=self.num_scenarios, dtype=tf.int32
+        )
+        
+        # Initialize output tensor
+        if num_time_samples == 1:
+            h_shape = [batch_size, self.num_rx_antennas, self.num_tx_antennas]
+        else:
+            h_shape = [batch_size, num_time_samples, self.num_rx_antennas, self.num_tx_antennas]
+        
+        h_out = tf.zeros(h_shape, dtype=tf.complex64)
+        
+        # Unroll scenario loop at graph construction time
+        # This works because num_scenarios is known statically (typically 1-3)
+        for si in range(self.num_scenarios):
+            scenario_name = self.scenarios[si]
+            sl = self._scenario_models[si]
+            
+            # Get mask for samples belonging to this scenario
+            mask = tf.equal(scenario_idx, si)
+            indices = tf.where(mask)  # Shape: (num_matching, 1)
+            num_matching = tf.shape(indices)[0]
+            
+            def generate_for_scenario(sl=sl, scenario_name=scenario_name, indices=indices):
+                # Sample topology for matching samples
+                ut_loc, bs_loc, ut_or, bs_or, ut_vel, in_state = self._sample_topology(
+                    tf.shape(indices)[0], scenario_name
+                )
+                sl.set_topology(
+                    ut_loc=ut_loc,
+                    bs_loc=bs_loc,
+                    ut_orientations=ut_or,
+                    bs_orientations=bs_or,
+                    ut_velocities=ut_vel,
+                    in_state=in_state,
+                )
+                
+                h_cir, tau = sl(num_time_samples=num_time_samples, sampling_frequency=sampling_frequency)
+                h_cir_s = tf.squeeze(h_cir, axis=[1, 3])
+                tau_s = tf.squeeze(tau, axis=[1, 2])
+                h_freq = cir_to_cfr(h_cir_s, tau_s, self._f_offsets)
+                h_flat = reduce_to_narrowband(h_freq, self.narrowband_method)
+                
+                if num_time_samples == 1:
+                    h_block = tf.squeeze(h_flat, axis=-1)
+                else:
+                    h_block = tf.transpose(h_flat, perm=[0, 3, 1, 2])
+                
+                h_block = tf.cast(h_block, tf.complex64)
+                
+                # Sanitize non-finite values
+                finite_mask = tf.math.is_finite(tf.math.real(h_block)) & tf.math.is_finite(
+                    tf.math.imag(h_block)
+                )
+                h_block = tf.where(finite_mask, h_block, tf.zeros_like(h_block))
+                
+                # Scatter into output tensor
+                return tf.tensor_scatter_nd_update(h_out, indices, h_block)
+            
+            # Only process if there are matching samples
+            h_out = tf.cond(
+                num_matching > 0,
+                generate_for_scenario,
+                lambda: h_out
+            )
+        
+        # Final sanitization
+        finite_mask = tf.math.is_finite(tf.math.real(h_out)) & tf.math.is_finite(tf.math.imag(h_out))
+        h_out = tf.where(finite_mask, h_out, tf.zeros_like(h_out))
+        
+        return h_out
+
     def _generate_channel_eager(self, batch_size, num_time_samples=1, sampling_frequency=1.0):
         """
         Eager-only channel generation.
@@ -398,49 +483,9 @@ class SionnaScenarioChannelModel(tf.keras.layers.Layer):
         if tf.executing_eagerly():
             return self._generate_channel_eager(batch_size, num_time_samples, sampling_frequency)
 
-        bs_tensor = (
-            batch_size
-            if isinstance(batch_size, tf.Tensor)
-            else tf.constant(int(batch_size), tf.int32)
-        )
-        nt_tensor = (
-            num_time_samples
-            if isinstance(num_time_samples, tf.Tensor)
-            else tf.constant(int(num_time_samples), tf.int32)
-        )
-        fs_tensor = (
-            sampling_frequency
-            if isinstance(sampling_frequency, tf.Tensor)
-            else tf.constant(float(sampling_frequency), tf.float32)
-        )
-
-        h = tf.py_function(
-            func=lambda bs, nt, fs: self._generate_channel_eager(
-                int(bs.numpy()),
-                int(nt.numpy()),
-                float(fs.numpy()),
-            ),
-            inp=[bs_tensor, nt_tensor, fs_tensor],
-            Tout=tf.complex64,
-        )
-
-        static_bs = tf.get_static_value(bs_tensor)
-        static_nt = tf.get_static_value(nt_tensor)
-        if static_bs is None:
-            if static_nt is None:
-                h.set_shape([None, None, self.num_rx_antennas, self.num_tx_antennas])
-            elif int(static_nt) == 1:
-                h.set_shape([None, self.num_rx_antennas, self.num_tx_antennas])
-            else:
-                h.set_shape([None, int(static_nt), self.num_rx_antennas, self.num_tx_antennas])
-        else:
-            if static_nt is None:
-                h.set_shape([int(static_bs), None, self.num_rx_antennas, self.num_tx_antennas])
-            elif int(static_nt) == 1:
-                h.set_shape([int(static_bs), self.num_rx_antennas, self.num_tx_antennas])
-            else:
-                h.set_shape([int(static_bs), int(static_nt), self.num_rx_antennas, self.num_tx_antennas])
-        return h
+        # Use graph-compatible TF-native implementation instead of tf.py_function
+        # This allows GPU execution inside @tf.function
+        return self._generate_channel_graph(batch_size, num_time_samples, sampling_frequency)
 
     def call(self, batch_size):
         return self.generate_channel(batch_size)
