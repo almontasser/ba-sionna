@@ -138,7 +138,7 @@ class Config:
     START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
 
     # ==================== Training Parameters ====================
-    BATCH_SIZE = 256  # Reduced to fit ~15 GB VRAM comfortably
+    BATCH_SIZE = 128  # Reduced to fit ~15 GB VRAM comfortably
     EPOCHS = 100
     LEARNING_RATE = 0.001
     LEARNING_RATE_DECAY = 0.96
@@ -274,9 +274,7 @@ class Config:
         print(
             f"  Include time feature: {getattr(cls, 'UE_INCLUDE_TIME_FEATURE', False)}"
         )
-        print(
-            f"  Include SNR feature: {getattr(cls, 'UE_INCLUDE_SNR_FEATURE', False)}"
-        )
+        print(f"  Include SNR feature: {getattr(cls, 'UE_INCLUDE_SNR_FEATURE', False)}")
         print(f"  Input layer norm: {getattr(cls, 'UE_INPUT_LAYER_NORM', False)}")
         print(f"  Output layer norm: {getattr(cls, 'UE_OUTPUT_LAYER_NORM', False)}")
         print(f"  UE dropout: {getattr(cls, 'UE_DROPOUT_RATE', 0.0)}")
