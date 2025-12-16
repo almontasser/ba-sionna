@@ -134,6 +134,12 @@ class Config:
     # Provides 1.5-2x speedup on GPU. Disable if you encounter XLA compilation errors.
     XLA_JIT_COMPILE = True
 
+    # Number of channel batches to pre-generate and cache. Set to 0 to disable caching.
+    # Caching speeds up training by reusing pre-generated channels instead of generating
+    # new ones each iteration. Trade-off: less channel diversity but much faster training.
+    # Recommended: 100-500 for fast training, 0 for maximum channel diversity.
+    CHANNEL_CACHE_SIZE = 100
+
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
     NCB = 8  # Codebook size at BS (number of beams in learned codebook)
