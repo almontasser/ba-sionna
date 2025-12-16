@@ -281,7 +281,6 @@ def train(config, checkpoint_dir=None, log_dir=None):
                         
                         # Use parallel generation for faster cache warmup
                         from concurrent.futures import ThreadPoolExecutor, as_completed
-                        import os
                         
                         num_workers = min(4, os.cpu_count() or 1)  # Use up to 4 workers
                         
