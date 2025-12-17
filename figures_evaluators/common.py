@@ -50,8 +50,8 @@ def load_c3_model(
         bs_height_rma_m=getattr(config, "BS_HEIGHT_RMA_M", 35.0),
     )
 
-    # Build model variables
-    _ = model(batch_size=2, snr_db=config.SNR_TRAIN, training=False)
+    # Build model variables without generating TR 38.901 channels.
+    model.build(None)
 
     # Restore model weights only (training checkpoints may also include optimizer).
     checkpoint = tf.train.Checkpoint(model=model)

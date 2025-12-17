@@ -174,9 +174,10 @@ def train(config, checkpoint_dir=None, log_dir=None):
         print(f"\nCreating model on {device_name}...")
         model = create_model(config)
 
-        # Build the model by running a dummy forward pass before restoring checkpoint.
-        print("Building model...")
-        _ = model(batch_size=config.BATCH_SIZE, snr_db=config.SNR_TRAIN, training=False)
+        # Build model variables without generating TR 38.901 channels (can OOM on GPU
+        # for large batch sizes and time-varying channels).
+        print("Building model (no channel generation)...")
+        model.build(None)
 
         # Setup checkpoint manager (model weights only).
         #
