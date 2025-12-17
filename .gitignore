@@ -9,3 +9,4 @@ events.out.tfevents.*
 *.pdf
 .cuda_stub/
 tmp_*
+AGENTS.md
