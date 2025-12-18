@@ -79,20 +79,21 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
         gradient_norm = tf.where(
             tf.math.is_finite(gradient_norm), gradient_norm, tf.zeros_like(gradient_norm)
         )
-        gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
+        clip_norm = float(getattr(Config, "GRAD_CLIP_NORM", 5.0))
+        gradients, _ = tf.clip_by_global_norm(gradients, clip_norm)
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        return loss, bf_gain_db, gradient_norm
+        return loss, bf_gain_db, gradient_norm, tf.constant(0, dtype=tf.int32)
 
     def _skip_update():
         # Note: tf.print removed - XLA doesn't support PrintV2
         # Non-finite losses are rare and handled by gradient sanitization
-        return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32)
+        return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32), tf.constant(1, dtype=tf.int32)
 
     return tf.cond(loss_finite, _apply_update, _skip_update)
 
 
 @tf.function(reduce_retracing=True, jit_compile=True)
-def validate_step(model, batch_size, snr_db, channels=None):
+def validate_step(model, batch_size, snr_db, channels=None, start_idx=None):
     """Single validation step (graph-compiled for speed)."""
     snr_db = tf.cast(snr_db, tf.float32)
     if channels is None:
@@ -103,7 +104,7 @@ def validate_step(model, batch_size, snr_db, channels=None):
         snr_linear = tf.pow(tf.constant(10.0, tf.float32), snr_db / 10.0)
         noise_power = 1.0 / snr_linear
         results = model.execute_beam_alignment(
-            channels, noise_power, training=False, snr_db=snr_db
+            channels, noise_power, training=False, start_idx=start_idx, snr_db=snr_db
         )
         channels_final = results["channels_final"]
 
@@ -122,7 +123,16 @@ def validate_step(model, batch_size, snr_db, channels=None):
     return loss, bf_gain_db, noise_power
 
 
-def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
+def validate(
+    model,
+    num_val_batches,
+    batch_size,
+    snr_db,
+    target_snr_db,
+    *,
+    channels_batches=None,
+    start_idx_batches=None,
+):
     """
     Validate the model.
     """
@@ -133,12 +143,19 @@ def validate(model, num_val_batches, batch_size, snr_db, target_snr_db):
     all_bf_gains_db = []
     noise_power = None
 
-    for _ in range(num_val_batches):
+    for bi in range(num_val_batches):
         channels = None
-        if getattr(Config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
+        start_idx = None
+        if channels_batches is not None:
+            channels = channels_batches[bi]
+        elif getattr(Config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
             channels, _, _ = model.generate_channels(val_batch_size)
+
+        if start_idx_batches is not None:
+            start_idx = start_idx_batches[bi]
+
         loss, bf_gain_db, noise_power = validate_step(
-            model, val_batch_size, snr_db, channels=channels
+            model, val_batch_size, snr_db, channels=channels, start_idx=start_idx
         )
         total_loss += float(loss.numpy())
         all_bf_gains_db.append(bf_gain_db)

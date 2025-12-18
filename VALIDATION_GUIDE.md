@@ -140,7 +140,7 @@ _ = model(batch_size=32, snr_db=10.0, training=True)
 
 for i in range(10):
     H, _, _ = model.generate_channels(32)
-    loss, bf_gain_db, grad_norm = train_step(
+    loss, bf_gain_db, grad_norm, update_skipped = train_step(
         model,
         opt,
         batch_size=32,
@@ -148,7 +148,19 @@ for i in range(10):
         channels=H,
     )
     gain_norm = -loss  # for LOSS_TYPE='paper'
-    print(i, "loss", float(loss.numpy()), "gain_norm", float(gain_norm.numpy()), "BF_gain_dB", float(bf_gain_db.numpy()), "grad_norm", float(grad_norm.numpy()))
+    print(
+        i,
+        "loss",
+        float(loss.numpy()),
+        "gain_norm",
+        float(gain_norm.numpy()),
+        "BF_gain_dB",
+        float(bf_gain_db.numpy()),
+        "grad_norm",
+        float(grad_norm.numpy()),
+        "update_skipped",
+        int(update_skipped.numpy()),
+    )
 PY
 ```
 

@@ -151,14 +151,38 @@ class Config:
     BATCH_SIZE = 128  # Reduced to fit ~15 GB VRAM comfortably
     EPOCHS = 100
     LEARNING_RATE = 0.001
+    # Learning-rate schedule:
+    # - "warmup_then_decay": linear warm-up (optional) + exponential decay (default)
+    # - "cosine_restarts": cosine annealing with warm restarts
+    # - "constant": constant LR (optionally with warm-up), useful for quick LR sweeps
+    LR_SCHEDULE = "warmup_then_decay"  # {"warmup_then_decay","cosine_restarts","constant"}
+    # Global LR multiplier applied on top of the chosen schedule (useful for ablations).
+    LR_SCALE = 1.0
     LEARNING_RATE_DECAY = 0.96
     LEARNING_RATE_DECAY_STEPS = 10  # Decay every 10 epochs
     LR_WARMUP_EPOCHS = 0  # Linear warm-up epochs (0 disables warm-up)
+
+    # Cosine warm restarts (used when LR_SCHEDULE=="cosine_restarts")
+    # Note: first decay period is expressed in epochs and converted to steps in train.py.
+    LR_COSINE_FIRST_DECAY_EPOCHS = 10
+    LR_COSINE_T_MUL = 2.0
+    LR_COSINE_M_MUL = 1.0
+    LR_COSINE_ALPHA = 0.0
+
+    # Optimizer safety knobs
+    GRAD_CLIP_NORM = 5.0
+    LR_BACKOFF_FACTOR = 0.5
+    LR_MAX_BACKOFFS = 3
+    DIVERGENCE_MAX_SKIPPED_STEPS = 20
 
     # Loss configuration
     # "paper": maximize normalized linear gain (Eq. 7 in paper)
     # "log": optional surrogate for ablations/stability
     LOSS_TYPE = "paper"
+
+    # Validation stability (for comparable TensorBoard curves + LR ablations)
+    VAL_USE_FIXED_CHANNELS = True
+    VAL_USE_FIXED_START_IDX = True
 
     # ==================== Narrowband Mapping ====================
     # How to reduce the TR 38.901 CIR/frequency response to a narrowband H used in y_t.
@@ -267,6 +291,16 @@ class Config:
         print(f"  Batch Size: {cls.BATCH_SIZE}")
         print(f"  Epochs: {cls.EPOCHS}")
         print(f"  Learning Rate: {cls.LEARNING_RATE}")
+        print(f"  LR schedule: {getattr(cls, 'LR_SCHEDULE', 'warmup_then_decay')}")
+        print(f"  LR scale: {getattr(cls, 'LR_SCALE', 1.0)}")
+        print(f"  LR warmup epochs: {getattr(cls, 'LR_WARMUP_EPOCHS', 0)}")
+        print(f"  Random seed: {getattr(cls, 'RANDOM_SEED', None)}")
+        print(
+            f"  Val fixed channels: {'on' if getattr(cls, 'VAL_USE_FIXED_CHANNELS', False) else 'off'}"
+        )
+        print(
+            f"  Val fixed start idx: {'on' if getattr(cls, 'VAL_USE_FIXED_START_IDX', False) else 'off'}"
+        )
         if cls.SNR_TRAIN_RANDOMIZE:
             print(
                 f"  Training SNR: {cls.SNR_TRAIN_RANGE[0]:.1f}-{cls.SNR_TRAIN_RANGE[1]:.1f} dB (randomized)"
