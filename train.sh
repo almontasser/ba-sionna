@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# If invoked as `sh train.sh`, re-exec under bash (arrays/pipefail are bash-only).
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 # LR + scenario-weight run script.
@@ -16,6 +20,7 @@ EPOCHS="${EPOCHS:-50}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 T="${T:-16}"
 SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-./checkpoints_C3_T${T}}"
 
 COMMON=(
   --require_gpu
@@ -28,6 +33,7 @@ COMMON=(
   --batch_size "${BATCH_SIZE}"
   -T "${T}"
   --scenarios "${SCENARIOS}"
+  --checkpoint_dir "${CHECKPOINT_DIR}"
 )
 
 # Step 1: UMi-heavy + baseline LR
