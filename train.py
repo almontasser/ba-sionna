@@ -218,6 +218,83 @@ def _normalize_scenario_weights(
     return {s: float(w) / total for s, w in weights.items()}
 
 
+def _parse_curriculum_epochs(spec: str) -> list[int]:
+    epochs: list[int] = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            val = int(part)
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid --curriculum_epochs item '{part}'. Expected integers, e.g. '3,3,94'."
+            ) from e
+        if val <= 0:
+            raise ValueError(f"Curriculum epoch counts must be positive, got {val}.")
+        epochs.append(val)
+    if not epochs:
+        raise ValueError("--curriculum_epochs must contain at least one positive integer.")
+    return epochs
+
+
+def _parse_curriculum_weights(spec: str) -> list[str]:
+    items: list[str] = []
+    for part in str(spec).split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        items.append(part)
+    if not items:
+        raise ValueError(
+            "--curriculum_weights must contain at least one weight spec, e.g. "
+            '"UMi=1,UMa=0,RMa=0;UMi=0.7,UMa=0.2,RMa=0.1;UMi=0.333,UMa=0.333,RMa=0.333".'
+        )
+    return items
+
+
+def _parse_scenario_curriculum(
+    scenarios: list[str],
+    *,
+    curriculum_epochs: str,
+    curriculum_weights: str,
+    total_epochs: int,
+) -> list[tuple[int, dict[str, float]]]:
+    """
+    Parse a multi-phase scenario-weight curriculum.
+
+    Returns a list of (num_epochs_in_phase, normalized_weights_dict).
+    """
+    epochs = _parse_curriculum_epochs(curriculum_epochs)
+    weights_specs = _parse_curriculum_weights(curriculum_weights)
+    if len(weights_specs) != len(epochs):
+        raise ValueError(
+            f"--curriculum_epochs has {len(epochs)} phase(s) but --curriculum_weights has {len(weights_specs)}; "
+            "they must match."
+        )
+
+    total = int(sum(epochs))
+    if total > int(total_epochs):
+        raise ValueError(
+            f"Curriculum epochs sum to {total}, which exceeds --epochs={int(total_epochs)}."
+        )
+    if total < int(total_epochs):
+        # Extend the last phase to cover the remaining epochs.
+        epochs[-1] += int(total_epochs) - total
+
+    phases: list[tuple[int, dict[str, float]]] = []
+    for ep, spec in zip(epochs, weights_specs):
+        w = _normalize_scenario_weights(
+            list(scenarios),
+            spec=spec,
+            w_umi=None,
+            w_uma=None,
+            w_rma=None,
+        )
+        phases.append((int(ep), w))
+    return phases
+
+
 def _create_scenario_channel_model(config, scenario: str) -> SionnaScenarioChannelModel:
     scenario = _canonical_scenario_name(scenario)
     return SionnaScenarioChannelModel(
@@ -268,12 +345,38 @@ def _build_per_scenario_batch_dataset(
     Build an infinite dataset of (channels, scenario_id), where each element is a full batch
     drawn from exactly one TR 38.901 scenario (UMi/UMa/RMa) per the provided weights.
     """
+    datasets, scenarios = _build_per_scenario_datasets(
+        config,
+        batch_size=batch_size,
+        num_time_samples=num_time_samples,
+        sampling_frequency=sampling_frequency,
+    )
+    seed = int(getattr(config, "RANDOM_SEED", 0) or 0)
+    active_scenarios = [
+        s for s in scenarios if float(scenario_weights.get(s, 0.0)) > 0.0
+    ]
+    mixed = _mix_scenario_datasets(
+        datasets,
+        scenarios,
+        scenario_weights=scenario_weights,
+        seed=seed,
+    )
+    return mixed, active_scenarios
+
+
+def _build_per_scenario_datasets(
+    config,
+    *,
+    batch_size: int,
+    num_time_samples: int,
+    sampling_frequency: float,
+) -> tuple[list[tf.data.Dataset], list[str]]:
+    """
+    Build per-scenario infinite datasets, each yielding (channels, scenario_id) batches.
+    """
     # Preserve the user's scenario order.
     scenarios = [_canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])]
-    scenarios = [s for s in scenarios if s in scenario_weights]
-    weights = [float(scenario_weights[s]) for s in scenarios]
-
-    seed = int(getattr(config, "RANDOM_SEED", 0) or 0)
+    scenarios = list(scenarios)
     gen_device = _resolve_channel_device(config)
 
     datasets: list[tf.data.Dataset] = []
@@ -292,13 +395,44 @@ def _build_per_scenario_batch_dataset(
             return ch, tf.constant(sid, dtype=tf.int32)
 
         ds = ds.map(_make_batch, num_parallel_calls=1, deterministic=True)
+        ds = ds.prefetch(1)
         datasets.append(ds)
 
-    mixed = tf.data.Dataset.sample_from_datasets(datasets, weights=weights, seed=seed)
-    return mixed, scenarios
+    return datasets, scenarios
 
 
-def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
+def _mix_scenario_datasets(
+    datasets: list[tf.data.Dataset],
+    scenarios: list[str],
+    *,
+    scenario_weights: dict[str, float],
+    seed: int,
+) -> tf.data.Dataset:
+    ds_list: list[tf.data.Dataset] = []
+    weights: list[float] = []
+    for ds, scenario in zip(datasets, scenarios):
+        w = float(scenario_weights.get(scenario, 0.0))
+        if w <= 0.0:
+            continue
+        ds_list.append(ds)
+        weights.append(w)
+    if not ds_list:
+        raise ValueError("Scenario weights must have at least one value > 0.")
+    total = float(sum(weights))
+    weights = [w / total for w in weights]
+    return tf.data.Dataset.sample_from_datasets(ds_list, weights=weights, seed=int(seed))
+
+
+def train(
+    config,
+    checkpoint_dir=None,
+    log_dir=None,
+    *,
+    run_name=None,
+    resume: bool = True,
+    reset_optimizer: bool = False,
+    scenario_curriculum_phases: list[tuple[int, dict[str, float]]] | None = None,
+):
     """
     Main training loop.
     
@@ -369,6 +503,21 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
         )
         config.SCENARIO_WEIGHTS = scenario_weights
 
+    if scenario_curriculum_phases is not None:
+        print("\nScenario curriculum (single run):")
+        for pi, (num_epochs, weights) in enumerate(scenario_curriculum_phases, start=1):
+            parts = []
+            for s in ["UMi", "UMa", "RMa"]:
+                if s in weights:
+                    parts.append(f"{s}={weights[s]:.3f}")
+            print(f"  Phase {pi}: {int(num_epochs)} epochs: {', '.join(parts)}")
+        with summary_writer.as_default():
+            tf.summary.text(
+                "run/scenario_curriculum",
+                tf.constant(str(scenario_curriculum_phases)),
+                step=0,
+            )
+
     print("\nScenario batch sampling weights (normalized):")
     for s in ["UMi", "UMa", "RMa"]:
         if s in scenario_weights:
@@ -392,62 +541,6 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
         # for large batch sizes and time-varying channels).
         print("Building model (no channel generation)...")
         model.build(None)
-
-        # Setup checkpoint manager (model weights only).
-        #
-        # This is intentionally model-only: optimizer state is fragile across
-        # architecture changes and can cause hard failures when restoring.
-        checkpoint = tf.train.Checkpoint(model=model)
-        checkpoint_manager = tf.train.CheckpointManager(
-            checkpoint, checkpoint_dir, max_to_keep=5
-        )
-
-        # Restore from checkpoint if available and compatible.
-        start_epoch = 0
-        if checkpoint_manager.latest_checkpoint:
-            ckpt_path = checkpoint_manager.latest_checkpoint
-            compat = check_checkpoint_compatibility(
-                model,
-                ckpt_path,
-                require_all_trainable=True,
-                require_ue_rnn_kernel=True,
-            )
-            if compat.ok:
-                try:
-                    checkpoint.restore(ckpt_path).expect_partial()
-                    print(f"✓ Restored model weights from {ckpt_path}")
-                except (ValueError, tf.errors.InvalidArgumentError) as e:
-                    print(
-                        "WARNING: Found a checkpoint but restore failed due to incompatibility.\n"
-                        "Starting training from scratch.\n"
-                        f"Restore error: {e}"
-                    )
-                    # Avoid overwriting incompatible checkpoints by switching
-                    # to a fresh directory.
-                    fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
-                    print(f"Using fresh checkpoint dir: {fresh_dir}")
-                    os.makedirs(fresh_dir, exist_ok=True)
-                    checkpoint_dir = fresh_dir
-                    checkpoint_manager = tf.train.CheckpointManager(
-                        checkpoint, checkpoint_dir, max_to_keep=5
-                    )
-            else:
-                print(
-                    "WARNING: Found a checkpoint but it does not match the current model.\n"
-                    "Starting training from scratch.\n"
-                    "Details:\n"
-                    f"{compat.summary()}\n"
-                    "Tip: use a fresh --checkpoint_dir (or delete old checkpoints) after changing architecture."
-                )
-                fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
-                print(f"Using fresh checkpoint dir: {fresh_dir}")
-                os.makedirs(fresh_dir, exist_ok=True)
-                checkpoint_dir = fresh_dir
-                checkpoint_manager = tf.train.CheckpointManager(
-                    checkpoint, checkpoint_dir, max_to_keep=5
-                )
-        else:
-            print("Starting training from scratch")
 
         # Create optimizer with learning-rate schedule
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
@@ -496,6 +589,147 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
             print(f"  Warmup: {warmup_epochs} epochs ({warmup_steps} steps)")
         if lr_schedule_name in {"cosine_restarts", "cosine_restart", "cosine"}:
             print(f"  Cosine first period: {first_decay_steps} steps (~{first_decay_epochs:g} epochs)")
+
+        # Setup checkpoint manager.
+        epoch_var = tf.Variable(0, trainable=False, dtype=tf.int64, name="epoch")
+        checkpoint = tf.train.Checkpoint(
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch_var,
+            lr_scale=lr_schedule.scale,
+        )
+        checkpoint_manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=5)
+
+        def _set_save_counter_from_path(ckpt_path: str) -> None:
+            """Avoid clobbering existing ckpt-N when restoring model-only."""
+            base = os.path.basename(str(ckpt_path))
+            if "-" not in base:
+                return
+            try:
+                n = int(base.split("-")[-1])
+            except ValueError:
+                return
+            try:
+                checkpoint.save_counter.assign(n)
+            except Exception:
+                pass
+
+        # Restore from checkpoint if available and compatible.
+        start_epoch = 0
+        if not bool(resume):
+            if checkpoint_manager.latest_checkpoint:
+                fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                print(
+                    "Resume disabled: not restoring from existing checkpoints.\n"
+                    f"Using fresh checkpoint dir: {fresh_dir}"
+                )
+                os.makedirs(fresh_dir, exist_ok=True)
+                checkpoint_dir = fresh_dir
+                checkpoint_manager = tf.train.CheckpointManager(
+                    checkpoint, checkpoint_dir, max_to_keep=5
+                )
+            print("Starting training from scratch (resume disabled)")
+        elif checkpoint_manager.latest_checkpoint:
+            ckpt_path = checkpoint_manager.latest_checkpoint
+            compat = check_checkpoint_compatibility(
+                model,
+                ckpt_path,
+                require_all_trainable=True,
+                require_ue_rnn_kernel=True,
+            )
+            if compat.ok:
+                try:
+                    if bool(reset_optimizer):
+                        # Restore weights (and epoch if present) but keep optimizer/LR fresh.
+                        tf.train.Checkpoint(model=model, epoch=epoch_var).restore(
+                            ckpt_path
+                        ).expect_partial()
+                        start_epoch = int(epoch_var.numpy())
+                        _set_save_counter_from_path(ckpt_path)
+                        print(
+                            f"✓ Restored model weights from {ckpt_path} "
+                            f"(optimizer reset; start_epoch={start_epoch})"
+                        )
+                    else:
+                        checkpoint.restore(ckpt_path).expect_partial()
+                        start_epoch = int(epoch_var.numpy())
+                        print(
+                            f"✓ Restored model+optimizer from {ckpt_path} (start_epoch={start_epoch})"
+                        )
+                except (ValueError, tf.errors.InvalidArgumentError) as e:
+                    if not bool(reset_optimizer):
+                        # Common case: model variables match, but optimizer slots/schedule mismatch.
+                        # Fall back to model-only restore so training can proceed.
+                        print(
+                            "WARNING: Full checkpoint restore failed; attempting model-only restore with optimizer reset.\n"
+                            f"Restore error: {e}"
+                        )
+                        try:
+                            tf.train.Checkpoint(model=model, epoch=epoch_var).restore(
+                                ckpt_path
+                            ).expect_partial()
+                            start_epoch = int(epoch_var.numpy())
+                            _set_save_counter_from_path(ckpt_path)
+                            print(
+                                f"✓ Restored model weights from {ckpt_path} "
+                                f"(optimizer reset; start_epoch={start_epoch})"
+                            )
+                        except (ValueError, tf.errors.InvalidArgumentError) as e2:
+                            print(
+                                "WARNING: Model-only restore also failed.\n"
+                                "Starting training from scratch.\n"
+                                f"Restore error: {e2}"
+                            )
+                            fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                            print(f"Using fresh checkpoint dir: {fresh_dir}")
+                            os.makedirs(fresh_dir, exist_ok=True)
+                            checkpoint_dir = fresh_dir
+                            checkpoint_manager = tf.train.CheckpointManager(
+                                checkpoint, checkpoint_dir, max_to_keep=5
+                            )
+                            epoch_var.assign(0)
+                            start_epoch = 0
+                    else:
+                        print(
+                            "WARNING: Model restore failed due to incompatibility.\n"
+                            "Starting training from scratch.\n"
+                            f"Restore error: {e}"
+                        )
+                        fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                        print(f"Using fresh checkpoint dir: {fresh_dir}")
+                        os.makedirs(fresh_dir, exist_ok=True)
+                        checkpoint_dir = fresh_dir
+                        checkpoint_manager = tf.train.CheckpointManager(
+                            checkpoint, checkpoint_dir, max_to_keep=5
+                        )
+                        epoch_var.assign(0)
+                        start_epoch = 0
+            else:
+                print(
+                    "WARNING: Found a checkpoint but it does not match the current model.\n"
+                    "Starting training from scratch.\n"
+                    "Details:\n"
+                    f"{compat.summary()}\n"
+                    "Tip: use a fresh --checkpoint_dir (or delete old checkpoints) after changing architecture."
+                )
+                fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                print(f"Using fresh checkpoint dir: {fresh_dir}")
+                os.makedirs(fresh_dir, exist_ok=True)
+                checkpoint_dir = fresh_dir
+                checkpoint_manager = tf.train.CheckpointManager(
+                    checkpoint, checkpoint_dir, max_to_keep=5
+                )
+                epoch_var.assign(0)
+                start_epoch = 0
+        else:
+            print("Starting training from scratch")
+
+        if start_epoch >= int(config.EPOCHS):
+            print(
+                f"Checkpoint indicates epoch={start_epoch}, which is >= requested --epochs={int(config.EPOCHS)}.\n"
+                "Nothing to do."
+            )
+            return
         
         # Training loop
         print("\n" + "=" * 80)
@@ -518,9 +752,23 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
             num_time_samples = int(nts) if nts is not None else int(config.T + 1)
             sampling_frequency = float(getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
 
+        use_scenario_ds = len(getattr(config, "SCENARIOS", [])) > 1
+
+        # Curriculum schedule: map epoch -> scenario weights.
+        curriculum_bounds = None
+        if scenario_curriculum_phases is not None:
+            curriculum_bounds = []
+            cur = 0
+            for num_ep, weights in scenario_curriculum_phases:
+                start = int(cur)
+                end = int(cur + int(num_ep))
+                curriculum_bounds.append((start, end, dict(weights)))
+                cur = end
+
         # Pre-generate a fixed validation set so epoch-to-epoch comparisons
         # reflect learning, not resampling variance (mirrors Fig. 4 eval style).
         val_channels_batches = None
+        val_channels_batches_by_scenario = None
         val_start_idx_batches = None
         if bool(getattr(config, "VAL_USE_FIXED_CHANNELS", False)):
             if not bool(getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False)):
@@ -531,14 +779,38 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
             else:
                 val_batches_eff = max(2, min(int(val_batches), 3))
                 val_batch_size = int(config.BATCH_SIZE) * 2
-                print(
-                    f"\nPre-generating fixed validation set: {val_batches_eff} batches "
-                    f"(batch_size={val_batch_size})..."
-                )
-                val_channels_batches = []
-                for _ in tqdm(range(val_batches_eff), desc="Val channels"):
-                    ch, _, _ = model.generate_channels(val_batch_size)
-                    val_channels_batches.append(ch)
+                gen_device = _resolve_channel_device(config)
+                if use_scenario_ds:
+                    val_channels_batches_by_scenario = {}
+                    val_scenarios = [
+                        _canonical_scenario_name(s)
+                        for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
+                    ]
+                    print(
+                        f"\nPre-generating per-scenario fixed validation sets: {val_batches_eff} batches "
+                        f"each (batch_size={val_batch_size})..."
+                    )
+                    for scenario in val_scenarios:
+                        ch_model = _create_scenario_channel_model(config, scenario)
+                        batches = []
+                        for _ in tqdm(range(val_batches_eff), desc=f"Val channels {scenario}"):
+                            with tf.device(gen_device):
+                                ch = ch_model.generate_channel(
+                                    val_batch_size,
+                                    num_time_samples=int(num_time_samples),
+                                    sampling_frequency=float(sampling_frequency),
+                                )
+                            batches.append(ch)
+                        val_channels_batches_by_scenario[scenario] = batches
+                else:
+                    print(
+                        f"\nPre-generating fixed validation set: {val_batches_eff} batches "
+                        f"(batch_size={val_batch_size})..."
+                    )
+                    val_channels_batches = []
+                    for _ in tqdm(range(val_batches_eff), desc="Val channels"):
+                        ch, _, _ = model.generate_channels(val_batch_size)
+                        val_channels_batches.append(ch)
 
                 if bool(getattr(config, "VAL_USE_FIXED_START_IDX", False)):
                     with tf.device("/CPU:0"):
@@ -554,25 +826,43 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
                 print("✓ Fixed validation set ready")
 
         # Per-scenario tf.data pipeline: one scenario per batch, sampled by weights.
-        train_scenario_ds = None
         train_scenario_iter = None
         train_scenarios = None
-        use_scenario_ds = len(getattr(config, "SCENARIOS", [])) > 1
+        per_scenario_datasets = None
+        per_scenario_scenarios = None
+        current_curriculum_phase = None
         if use_scenario_ds:
             cache_size = int(getattr(config, "CHANNEL_CACHE_SIZE", 0) or 0)
             if cache_size > 0:
                 print("Note: CHANNEL_CACHE_SIZE is ignored when using per-scenario tf.data sampling.")
-            train_scenario_ds, train_scenarios = _build_per_scenario_batch_dataset(
+            per_scenario_datasets, per_scenario_scenarios = _build_per_scenario_datasets(
                 config,
                 batch_size=int(config.BATCH_SIZE),
                 num_time_samples=int(num_time_samples),
                 sampling_frequency=float(sampling_frequency),
-                scenario_weights=scenario_weights,
             )
-            train_scenario_iter = iter(train_scenario_ds)
-            print("\nTraining data: per-scenario batches via tf.data.sample_from_datasets")
-            for s in train_scenarios:
-                print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
+            train_scenarios = list(per_scenario_scenarios)
+            if curriculum_bounds is None:
+                train_scenario_ds = _mix_scenario_datasets(
+                    per_scenario_datasets,
+                    per_scenario_scenarios,
+                    scenario_weights=scenario_weights,
+                    seed=seed,
+                )
+                train_scenario_iter = iter(train_scenario_ds)
+                active = [
+                    s
+                    for s in per_scenario_scenarios
+                    if float(scenario_weights.get(s, 0.0)) > 0.0
+                ]
+                print("\nTraining data: per-scenario batches via tf.data.sample_from_datasets")
+                for s in active:
+                    print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
+            else:
+                print(
+                    "\nTraining data: per-scenario batches via tf.data.sample_from_datasets "
+                    "(curriculum enabled)"
+                )
 
         def _backoff_lr(reason: str) -> None:
             nonlocal num_backoffs, skipped_steps_in_row
@@ -599,6 +889,68 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
         for epoch in range(start_epoch, config.EPOCHS):
             print(f"\nEpoch {epoch + 1}/{config.EPOCHS}")
             print("-" * 80)
+
+            # Update scenario weights for this epoch (curriculum), and rebuild the
+            # per-scenario dataset only when switching phases.
+            if (
+                use_scenario_ds
+                and curriculum_bounds is not None
+                and per_scenario_datasets is not None
+                and per_scenario_scenarios is not None
+            ):
+                phase_idx = None
+                phase_start = 0
+                phase_end = 0
+                phase_weights = None
+                for i, (s, e, w) in enumerate(curriculum_bounds):
+                    if int(s) <= int(epoch) < int(e):
+                        phase_idx = int(i)
+                        phase_start = int(s)
+                        phase_end = int(e)
+                        phase_weights = dict(w)
+                        break
+                if phase_idx is None or phase_weights is None:
+                    raise RuntimeError(
+                        f"Scenario curriculum does not cover epoch {epoch}. "
+                        "Check --curriculum_epochs vs --epochs."
+                    )
+                if current_curriculum_phase != phase_idx:
+                    current_curriculum_phase = phase_idx
+                    scenario_weights = dict(phase_weights)
+                    config.SCENARIO_WEIGHTS = dict(scenario_weights)
+                    train_scenario_ds = _mix_scenario_datasets(
+                        per_scenario_datasets,
+                        per_scenario_scenarios,
+                        scenario_weights=scenario_weights,
+                        seed=seed + int(phase_idx),
+                    )
+                    train_scenario_iter = iter(train_scenario_ds)
+
+                    active = [
+                        s
+                        for s in per_scenario_scenarios
+                        if float(scenario_weights.get(s, 0.0)) > 0.0
+                    ]
+                    print(
+                        f"\nScenario curriculum phase {phase_idx + 1}: "
+                        f"epochs {phase_start + 1}-{phase_end}"
+                    )
+                    for s in active:
+                        print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
+                    with summary_writer.as_default():
+                        tf.summary.scalar(
+                            "train/scenario_curriculum_phase",
+                            float(phase_idx + 1),
+                            step=global_step,
+                        )
+                        for s in ["UMi", "UMa", "RMa"]:
+                            if s in scenario_weights:
+                                tf.summary.scalar(
+                                    f"train/scenario_weight_{s}",
+                                    scenario_weights[s],
+                                    step=global_step,
+                                )
+
             try:
                 lr_now = float(_current_learning_rate(optimizer).numpy())
                 iter_now = int(optimizer.iterations.numpy())
@@ -850,26 +1202,121 @@ def train(config, checkpoint_dir=None, log_dir=None, *, run_name=None):
             print(f"\nTraining - Loss: {avg_loss:.4f}, BF Gain: {avg_bf_gain:.2f} dB")
             
             # Validation
-            print("Validating...")
-            val_metrics = validate(
-                model, val_batches, config.BATCH_SIZE, 
-                config.SNR_TRAIN, config.SNR_TARGET,
-                channels_batches=val_channels_batches,
-                start_idx_batches=val_start_idx_batches,
-            )
-            
-            print(f"Validation - Loss: {val_metrics['val_loss']:.4f}")
-            print(f"             BF Gain: {val_metrics['mean_bf_gain_db']:.2f} ± {val_metrics['std_bf_gain_db']:.2f} dB")
-            print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
-            
-            # Log to TensorBoard
-            with summary_writer.as_default():
-                tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
-                tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
-                tf.summary.scalar(
-                    "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
+            if use_scenario_ds and val_channels_batches_by_scenario is not None:
+                print("Validating (per scenario)...")
+                per_metrics: dict[str, dict[str, float]] = {}
+                scenarios_eval = (
+                    list(train_scenarios)
+                    if isinstance(train_scenarios, list) and train_scenarios
+                    else list(val_channels_batches_by_scenario.keys())
                 )
+                for scenario in scenarios_eval:
+                    if scenario not in val_channels_batches_by_scenario:
+                        continue
+                    m = validate(
+                        model,
+                        val_batches,
+                        config.BATCH_SIZE,
+                        config.SNR_TRAIN,
+                        config.SNR_TARGET,
+                        channels_batches=val_channels_batches_by_scenario[scenario],
+                        start_idx_batches=val_start_idx_batches,
+                    )
+                    per_metrics[scenario] = m
+                    print(
+                        f"  {scenario}: loss={m['val_loss']:.4f}, "
+                        f"BF_gain={m['mean_bf_gain_db']:.2f}±{m['std_bf_gain_db']:.2f} dB, "
+                        f"sat={m['satisfaction_prob']:.3f}"
+                    )
+                    with summary_writer.as_default():
+                        tf.summary.scalar(f"val/{scenario}/loss", m["val_loss"], step=global_step)
+                        tf.summary.scalar(
+                            f"val/{scenario}/bf_gain_db", m["mean_bf_gain_db"], step=global_step
+                        )
+                        tf.summary.scalar(
+                            f"val/{scenario}/satisfaction_prob",
+                            m["satisfaction_prob"],
+                            step=global_step,
+                        )
+
+                if not per_metrics:
+                    raise RuntimeError("Per-scenario validation requested but no scenario metrics were produced.")
+
+                # Macro-average across scenarios (robustness target).
+                n = float(len(per_metrics))
+                loss_macro = float(sum(m["val_loss"] for m in per_metrics.values()) / n)
+                bf_macro = float(sum(m["mean_bf_gain_db"] for m in per_metrics.values()) / n)
+                std_macro = float(sum(m["std_bf_gain_db"] for m in per_metrics.values()) / n)
+                sat_macro = float(sum(m["satisfaction_prob"] for m in per_metrics.values()) / n)
+
+                # Weighted average using current sampling weights (useful for curriculum phases).
+                total_w = float(sum(float(scenario_weights.get(s, 0.0)) for s in per_metrics.keys()))
+                if total_w > 0.0:
+                    bf_weighted = float(
+                        sum(
+                            float(scenario_weights.get(s, 0.0)) * float(m["mean_bf_gain_db"])
+                            for s, m in per_metrics.items()
+                        )
+                        / total_w
+                    )
+                    sat_weighted = float(
+                        sum(
+                            float(scenario_weights.get(s, 0.0)) * float(m["satisfaction_prob"])
+                            for s, m in per_metrics.items()
+                        )
+                        / total_w
+                    )
+                else:
+                    bf_weighted = bf_macro
+                    sat_weighted = sat_macro
+
+                val_metrics = {
+                    "val_loss": loss_macro,
+                    "mean_bf_gain_db": bf_macro,
+                    "std_bf_gain_db": std_macro,
+                    "satisfaction_prob": sat_macro,
+                }
+
+                print(f"Validation (macro) - Loss: {loss_macro:.4f}")
+                print(f"                 BF Gain: {bf_macro:.2f} ± {std_macro:.2f} dB")
+                print(f"                 Satisfaction Prob: {sat_macro:.3f}")
+
+                with summary_writer.as_default():
+                    # Keep legacy keys as macro-averages for easy comparison.
+                    tf.summary.scalar("val/loss", loss_macro, step=global_step)
+                    tf.summary.scalar("val/bf_gain_db", bf_macro, step=global_step)
+                    tf.summary.scalar("val/satisfaction_prob", sat_macro, step=global_step)
+                    tf.summary.scalar("val/bf_gain_db_weighted", bf_weighted, step=global_step)
+                    tf.summary.scalar("val/satisfaction_prob_weighted", sat_weighted, step=global_step)
+            else:
+                print("Validating...")
+                val_metrics = validate(
+                    model,
+                    val_batches,
+                    config.BATCH_SIZE,
+                    config.SNR_TRAIN,
+                    config.SNR_TARGET,
+                    channels_batches=val_channels_batches,
+                    start_idx_batches=val_start_idx_batches,
+                )
+
+                print(f"Validation - Loss: {val_metrics['val_loss']:.4f}")
+                print(
+                    f"             BF Gain: {val_metrics['mean_bf_gain_db']:.2f} ± {val_metrics['std_bf_gain_db']:.2f} dB"
+                )
+                print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
+
+                # Log to TensorBoard
+                with summary_writer.as_default():
+                    tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
+                    tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
+                    tf.summary.scalar(
+                        "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
+                    )
             
+            # Update epoch counter in the checkpoint (store "next epoch to run").
+            epoch_var.assign(int(epoch) + 1)
+
             # Save checkpoint
             if val_metrics['mean_bf_gain_db'] > best_val_bf_gain:
                 best_val_bf_gain = val_metrics['mean_bf_gain_db']
@@ -939,6 +1386,20 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_dir', type=str, default=None, help='Checkpoint directory')
     parser.add_argument('--log_dir', type=str, default=None, help='Log directory')
     parser.add_argument('--run_name', type=str, default=None, help='Optional run name for logs/checkpoints')
+    parser.add_argument(
+        '--resume',
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help='If 1, resume from latest checkpoint in --checkpoint_dir when available (default: 1).',
+    )
+    parser.add_argument(
+        '--reset_optimizer',
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help='If 1, restore model weights but reset optimizer/LR state when resuming (default: 0).',
+    )
     parser.add_argument('--seed', type=int, default=None, help='Random seed (overrides Config.RANDOM_SEED)')
     parser.add_argument(
         '--require_gpu',
@@ -974,6 +1435,27 @@ if __name__ == "__main__":
     parser.add_argument('--w_umi', type=float, default=None, help='Weight for UMi (batch sampling)')
     parser.add_argument('--w_uma', type=float, default=None, help='Weight for UMa (batch sampling)')
     parser.add_argument('--w_rma', type=float, default=None, help='Weight for RMa (batch sampling)')
+    parser.add_argument(
+        '--scenario_curriculum',
+        action='store_true',
+        help='Enable an in-run scenario-weight curriculum (weights change across epochs).',
+    )
+    parser.add_argument(
+        '--curriculum_epochs',
+        type=str,
+        default=None,
+        help='Comma-separated phase lengths in epochs, e.g. "3,3,94". Requires --scenario_curriculum.',
+    )
+    parser.add_argument(
+        '--curriculum_weights',
+        type=str,
+        default=None,
+        help=(
+            'Semicolon-separated weight specs per phase, e.g. '
+            '"UMi=1,UMa=0,RMa=0;UMi=0.7,UMa=0.2,RMa=0.1;UMi=0.333,UMa=0.333,RMa=0.333". '
+            "Requires --scenario_curriculum."
+        ),
+    )
     parser.add_argument('--target_snr', type=float, default=None,
                        help='Target SNR (dB) for satisfaction probability metrics')
     parser.add_argument('--lr_warmup_epochs', type=int, default=0,
@@ -1059,14 +1541,39 @@ if __name__ == "__main__":
     if args.seed is not None:
         Config.RANDOM_SEED = int(args.seed)
 
-    # Scenario weights (batch-level sampling)
-    Config.SCENARIO_WEIGHTS = _normalize_scenario_weights(
-        list(getattr(Config, "SCENARIOS", ["UMi", "UMa", "RMa"])),
-        spec=args.scenario_weights,
-        w_umi=args.w_umi,
-        w_uma=args.w_uma,
-        w_rma=args.w_rma,
-    )
+    # Scenario weights (batch-level sampling) or in-run curriculum.
+    scenario_curriculum_phases = None
+    if args.scenario_curriculum:
+        if args.scenario_weights is not None or any(
+            x is not None for x in (args.w_umi, args.w_uma, args.w_rma)
+        ):
+            raise ValueError(
+                "Use either --scenario_curriculum or --scenario_weights/--w_umi/--w_uma/--w_rma, not both."
+            )
+        if args.curriculum_epochs is None or args.curriculum_weights is None:
+            raise ValueError(
+                "--scenario_curriculum requires both --curriculum_epochs and --curriculum_weights."
+            )
+        scenario_curriculum_phases = _parse_scenario_curriculum(
+            list(getattr(Config, "SCENARIOS", ["UMi", "UMa", "RMa"])),
+            curriculum_epochs=str(args.curriculum_epochs),
+            curriculum_weights=str(args.curriculum_weights),
+            total_epochs=int(getattr(Config, "EPOCHS", 0)),
+        )
+        # Seed the initial weights for logging/config printing.
+        Config.SCENARIO_WEIGHTS = dict(scenario_curriculum_phases[0][1])
+    else:
+        if args.curriculum_epochs is not None or args.curriculum_weights is not None:
+            print(
+                "WARNING: --curriculum_epochs/--curriculum_weights provided without --scenario_curriculum; ignoring."
+            )
+        Config.SCENARIO_WEIGHTS = _normalize_scenario_weights(
+            list(getattr(Config, "SCENARIOS", ["UMi", "UMa", "RMa"])),
+            spec=args.scenario_weights,
+            w_umi=args.w_umi,
+            w_uma=args.w_uma,
+            w_rma=args.w_rma,
+        )
     
     if args.test_mode:
         Config.EPOCHS = 1
@@ -1095,4 +1602,7 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir,
         log_dir=args.log_dir,
         run_name=args.run_name,
+        resume=bool(int(args.resume)),
+        reset_optimizer=bool(int(args.reset_optimizer)),
+        scenario_curriculum_phases=scenario_curriculum_phases,
     )

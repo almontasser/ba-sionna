@@ -5,22 +5,50 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-# LR + scenario-weight run script.
-#
-# Runs three training commands:
-#  1) Baseline LR + UMi-heavy scenario sampling
-#  2) LR ×3 + RMa-heavy scenario sampling
-#  3) Cosine restarts + balanced scenario sampling (last)
+# Train one robust multi-scenario model by default with a 3-phase curriculum:
+# warmup stage 1 -> warmup stage 2 -> main (balanced).
 #
 # Override knobs (optional):
-#   SEED=42 EPOCHS=50 BATCH_SIZE=128 T=16 SCENARIOS="UMi,UMa,RMa" bash train.sh
+#   RUN_NAME=final_balanced EPOCHS=100 BATCH_SIZE=128 T=16 bash train.sh
 
+RUN_NAME="${RUN_NAME:-final_curriculum}"
 SEED="${SEED:-42}"
-EPOCHS="${EPOCHS:-50}"
+EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 T="${T:-16}"
 SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-./checkpoints_C3_T${T}}"
+
+RESUME="${RESUME:-1}"
+RESET_OPTIMIZER="${RESET_OPTIMIZER:-0}"
+
+# Default: balanced sampling across scenarios (used if curriculum is disabled).
+SCENARIO_WEIGHTS="${SCENARIO_WEIGHTS:-UMi=0.333333,UMa=0.333333,RMa=0.333333}"
+
+# Curriculum schedule (phases in one run).
+# Disable by setting: SCENARIO_CURRICULUM=0
+SCENARIO_CURRICULUM="${SCENARIO_CURRICULUM:-1}"
+
+# Phase lengths (epochs). Main defaults to "EPOCHS - warmup1 - warmup2".
+WARMUP1_EPOCHS="${WARMUP1_EPOCHS:-3}"
+WARMUP2_EPOCHS="${WARMUP2_EPOCHS:-3}"
+MAIN_EPOCHS_DEFAULT=$((EPOCHS - WARMUP1_EPOCHS - WARMUP2_EPOCHS))
+if [ "${MAIN_EPOCHS_DEFAULT}" -le 0 ]; then
+  echo "ERROR: EPOCHS (${EPOCHS}) must be > WARMUP1_EPOCHS+WARMUP2_EPOCHS (${WARMUP1_EPOCHS}+${WARMUP2_EPOCHS})." >&2
+  exit 1
+fi
+MAIN_EPOCHS="${MAIN_EPOCHS:-${MAIN_EPOCHS_DEFAULT}}"
+
+# Phase weights (one scenario per batch; sampled across batches).
+WARMUP1_WEIGHTS="${WARMUP1_WEIGHTS:-UMi=1,UMa=0,RMa=0}"
+WARMUP2_WEIGHTS="${WARMUP2_WEIGHTS:-UMi=0.7,UMa=0.2,RMa=0.1}"
+MAIN_WEIGHTS="${MAIN_WEIGHTS:-UMi=0.333333,UMa=0.333333,RMa=0.333333}"
+
+CURRICULUM_EPOCHS="${CURRICULUM_EPOCHS:-${WARMUP1_EPOCHS},${WARMUP2_EPOCHS},${MAIN_EPOCHS}}"
+CURRICULUM_WEIGHTS="${CURRICULUM_WEIGHTS:-${WARMUP1_WEIGHTS};${WARMUP2_WEIGHTS};${MAIN_WEIGHTS}}"
+
+# Optional passthrough args to `train.py`:
+#   bash train.sh --lr_schedule cosine_restarts --lr 0.003 --cosine_first_decay_epochs 13
+EXTRA_ARGS=("$@")
 
 COMMON=(
   --require_gpu
@@ -33,21 +61,19 @@ COMMON=(
   --batch_size "${BATCH_SIZE}"
   -T "${T}"
   --scenarios "${SCENARIOS}"
-  --checkpoint_dir "${CHECKPOINT_DIR}"
+  --run_name "${RUN_NAME}"
+  --resume "${RESUME}"
+  --reset_optimizer "${RESET_OPTIMIZER}"
 )
 
-# Step 1: UMi-heavy + baseline LR
-python train.py --run_name "umi_heavy_lr_baseline" "${COMMON[@]}" \
-  --scenario_weights "UMi=0.7,UMa=0.2,RMa=0.1" \
-  --lr_schedule warmup_then_decay --lr 0.001 --lr_scale 1.0
-
-# Step 2: RMa-heavy + LR ×3
-python train.py --run_name "rma_heavy_lr_x3" "${COMMON[@]}" \
-  --scenario_weights "UMi=0.1,UMa=0.2,RMa=0.7" \
-  --lr_schedule warmup_then_decay --lr 0.001 --lr_scale 3.0
-
-# Step 3 (last): balanced scenarios + cosine restarts
-python train.py --run_name "balanced_lr_cosine_restarts" "${COMMON[@]}" \
-  --scenario_weights "UMi=0.333333,UMa=0.333333,RMa=0.333333" \
-  --lr_schedule cosine_restarts --lr 0.003 --lr_scale 1.0 \
-  --cosine_first_decay_epochs 13 --cosine_t_mul 2.0 --cosine_m_mul 1.0 --cosine_alpha 0.0
+if [ "${SCENARIO_CURRICULUM}" = "1" ]; then
+  python train.py "${COMMON[@]}" \
+    --scenario_curriculum \
+    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
+    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
+    "${EXTRA_ARGS[@]}"
+else
+  python train.py "${COMMON[@]}" \
+    --scenario_weights "${SCENARIO_WEIGHTS}" \
+    "${EXTRA_ARGS[@]}"
+fi

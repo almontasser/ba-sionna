@@ -102,9 +102,23 @@ python train.py --test_mode
 
 See `QUICKSTART.md` and `VALIDATION_GUIDE.md` for recommended validation steps.
 
-For a 3-step run (LR schedule + scenario-weight presets), run:
+Train one robust multi-scenario model with 2 warmup stages + balanced main stage (default):
 ```bash
 bash train.sh
+```
+
+Disable curriculum (pure balanced sampling for all epochs):
+```bash
+SCENARIO_CURRICULUM=0 RUN_NAME=final_balanced bash train.sh
+```
+
+Avoid accidental carry-over between runs:
+- Start fresh: `RESUME=0 bash train.sh`
+- Reuse weights but reset optimizer/LR state: `RESET_OPTIMIZER=1 bash train.sh`
+
+Pass extra args through to `train.py`:
+```bash
+bash train.sh --lr_schedule cosine_restarts --lr 0.003 --cosine_first_decay_epochs 13
 ```
 
 ### Monitoring Training
