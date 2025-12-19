@@ -96,6 +96,33 @@ def load_c3_model(
             if cand != checkpoint_dir and not os.path.isdir(checkpoint_dir):
                 print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{cand}'")
             break
+        # Fallback: some legacy checkpoints only track weights through the optimizer.
+        # Attempt an optimizer-backed restore before rejecting the checkpoint.
+        has_opt_vars = any(
+            name.startswith("optimizer/_trainable_variables/")
+            for name, _ in tf.train.list_variables(ckpt_path)
+        )
+        if has_opt_vars:
+            try:
+                optimizer = tf.keras.optimizers.Adam(learning_rate=0.0)
+                optimizer.build(model.trainable_variables)
+                tf.train.Checkpoint(model=model, optimizer=optimizer).restore(
+                    ckpt_path
+                ).expect_partial()
+                if cand != checkpoint_dir and not os.path.isdir(checkpoint_dir):
+                    print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{cand}'")
+                print(
+                    f"Loaded checkpoint via optimizer weights (legacy format): {ckpt_path}"
+                )
+                break
+            except Exception as e:
+                last_summary = (
+                    f"Incompatible checkpoint: {ckpt_path}\n"
+                    f"{compat.summary()}\n"
+                    f"Optimizer-restore failed: {e}"
+                )
+                ckpt_path = None
+                continue
         last_summary = (
             f"Incompatible checkpoint: {ckpt_path}\n"
             f"{compat.summary()}"
