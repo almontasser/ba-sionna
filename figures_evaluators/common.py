@@ -1,3 +1,5 @@
+import os
+import re
 import tensorflow as tf
 
 from metrics import BeamAlignmentMetrics
@@ -6,6 +8,28 @@ from checkpoint_utils import check_checkpoint_compatibility
 
 
 # ==================== Model Loading and Evaluation ====================
+
+def _resolve_checkpoint_dir(checkpoint_dir: str) -> str:
+    if os.path.isdir(checkpoint_dir):
+        return checkpoint_dir
+    parent = os.path.dirname(checkpoint_dir) or "."
+    prefix = os.path.basename(checkpoint_dir)
+    if not os.path.isdir(parent):
+        return checkpoint_dir
+    pattern = re.compile(rf"^{re.escape(prefix)}")
+    matches = []
+    for name in os.listdir(parent):
+        path = os.path.join(parent, name)
+        if os.path.isdir(path) and pattern.match(name):
+            matches.append(path)
+    if not matches:
+        return checkpoint_dir
+    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    chosen = matches[0]
+    if chosen != checkpoint_dir:
+        print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{chosen}'")
+    return chosen
+
 
 def load_c3_model(
     config,
@@ -52,6 +76,8 @@ def load_c3_model(
 
     # Build model variables without generating TR 38.901 channels.
     model.build(None)
+
+    checkpoint_dir = _resolve_checkpoint_dir(checkpoint_dir)
 
     # Restore model weights only (training checkpoints may also include optimizer).
     checkpoint = tf.train.Checkpoint(model=model)
