@@ -9,17 +9,26 @@ set -euo pipefail
 # warmup stage 1 -> warmup stage 2 -> main (balanced).
 #
 # Override knobs (optional):
-#   RUN_NAME=final_balanced EPOCHS=100 BATCH_SIZE=128 T=16 bash train.sh
+#   RUN_NAME=final_curriculum EPOCHS=100 BATCH_SIZE=128 T=16 bash train.sh
 
 RUN_NAME="${RUN_NAME:-final_curriculum}"
 SEED="${SEED:-42}"
-EPOCHS="${EPOCHS:-25}"
+EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 T="${T:-16}"
 SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
 
 RESUME="${RESUME:-1}"
 RESET_OPTIMIZER="${RESET_OPTIMIZER:-0}"
+CHANNEL_CACHE_DEVICE="${CHANNEL_CACHE_DEVICE:-cpu}"         # auto|cpu|gpu
+
+# Fixed validation can be memory heavy on GPU (TR 38.901 CIR/CFR intermediates),
+# so keep it on CPU by default.
+VAL_CHANNEL_GEN_DEVICE="${VAL_CHANNEL_GEN_DEVICE:-cpu}"   # auto|cpu|gpu
+VAL_BATCH_MULTIPLIER="${VAL_BATCH_MULTIPLIER:-1}"         # val_batch_size = BATCH_SIZE * multiplier
+
+# Disable curriculum by setting: SCENARIO_CURRICULUM=0
+SCENARIO_CURRICULUM="${SCENARIO_CURRICULUM:-1}"
 
 # Default: balanced sampling across scenarios (used if curriculum is disabled).
 SCENARIO_WEIGHTS="${SCENARIO_WEIGHTS:-UMi=0.333333,UMa=0.333333,RMa=0.333333}"
@@ -50,8 +59,11 @@ COMMON=(
   --require_gpu
   --channel_gen_device gpu
   --train_channels_outside_graph 1
+  --channel_cache_device "${CHANNEL_CACHE_DEVICE}"
   --val_fixed_channels 1
   --val_fixed_start_idx 1
+  --val_channel_gen_device "${VAL_CHANNEL_GEN_DEVICE}"
+  --val_batch_multiplier "${VAL_BATCH_MULTIPLIER}"
   --seed "${SEED}"
   --epochs "${EPOCHS}"
   --batch_size "${BATCH_SIZE}"
@@ -62,25 +74,14 @@ COMMON=(
   --reset_optimizer "${RESET_OPTIMIZER}"
 )
 
-
+if [ "${SCENARIO_CURRICULUM}" = "1" ]; then
   python train.py "${COMMON[@]}" \
     --scenario_curriculum \
     --curriculum_epochs "${CURRICULUM_EPOCHS}" \
     --curriculum_weights "${CURRICULUM_WEIGHTS}" \
     "${EXTRA_ARGS[@]}"
+else
   python train.py "${COMMON[@]}" \
-    --scenario_curriculum \
-    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
-    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
+    --scenario_weights "${SCENARIO_WEIGHTS}" \
     "${EXTRA_ARGS[@]}"
-  python train.py "${COMMON[@]}" \
-    --scenario_curriculum \
-    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
-    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
-    "${EXTRA_ARGS[@]}"  
-  python train.py "${COMMON[@]}" \
-    --scenario_curriculum \
-    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
-    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
-    "${EXTRA_ARGS[@]}"
-
+fi

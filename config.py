@@ -139,6 +139,9 @@ class Config:
     # new ones each iteration. Trade-off: less channel diversity but much faster training.
     # Recommended: 100-500 for fast training, 0 for maximum channel diversity.
     CHANNEL_CACHE_SIZE = 100
+    # Where to store cached channel tensors. When set to "gpu", cached channels remain
+    # on GPU (fastest training, uses VRAM). Set to "cpu" to reduce GPU memory use.
+    CHANNEL_CACHE_DEVICE = "auto"  # {"auto","cpu","gpu"}
 
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
@@ -183,6 +186,10 @@ class Config:
     # Validation stability (for comparable TensorBoard curves + LR ablations)
     VAL_USE_FIXED_CHANNELS = True
     VAL_USE_FIXED_START_IDX = True
+    # Fixed-validation generation can be memory-heavy on GPU (TR 38.901 CIR/CFR intermediates),
+    # so keep it configurable and default to CPU.
+    VAL_CHANNEL_GENERATION_DEVICE = "cpu"  # auto|cpu|gpu
+    VAL_BATCH_MULTIPLIER = 1  # val_batch_size = BATCH_SIZE * multiplier
 
     # ==================== Narrowband Mapping ====================
     # How to reduce the TR 38.901 CIR/frequency response to a narrowband H used in y_t.
@@ -281,6 +288,10 @@ class Config:
         print(
             f"  Train channels outside graph: {'on' if getattr(cls, 'TRAIN_CHANNELS_OUTSIDE_GRAPH', False) else 'off'}"
         )
+        print(
+            f"  Channel cache: {getattr(cls, 'CHANNEL_CACHE_SIZE', 0)} batches "
+            f"(device={getattr(cls, 'CHANNEL_CACHE_DEVICE', 'auto')})"
+        )
         print(f"\nBeam Alignment:")
         print(f"  Sensing Steps (T): {cls.T}")
         print(f"  BS Codebook Size (NCB): {cls.NCB}")
@@ -300,6 +311,10 @@ class Config:
         )
         print(
             f"  Val fixed start idx: {'on' if getattr(cls, 'VAL_USE_FIXED_START_IDX', False) else 'off'}"
+        )
+        print(f"  Val batch multiplier: {getattr(cls, 'VAL_BATCH_MULTIPLIER', 1)}")
+        print(
+            f"  Val channel gen device: {getattr(cls, 'VAL_CHANNEL_GENERATION_DEVICE', getattr(cls, 'CHANNEL_GENERATION_DEVICE', 'auto'))}"
         )
         if cls.SNR_TRAIN_RANDOMIZE:
             print(
