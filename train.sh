@@ -14,7 +14,7 @@ set -euo pipefail
 RUN_NAME="${RUN_NAME:-final_curriculum}"
 SEED="${SEED:-42}"
 EPOCHS="${EPOCHS:-100}"
-BATCH_SIZE="${BATCH_SIZE:-128}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 T="${T:-16}"
 SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
 
