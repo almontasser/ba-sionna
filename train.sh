@@ -20,8 +20,6 @@ SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
 
 RESUME="${RESUME:-1}"
 RESET_OPTIMIZER="${RESET_OPTIMIZER:-0}"
-CHANNEL_CACHE_DEVICE="${CHANNEL_CACHE_DEVICE:-cpu}"         # auto|cpu|gpu
-
 # Fixed validation can be memory heavy on GPU (TR 38.901 CIR/CFR intermediates),
 # so keep it on CPU by default.
 VAL_CHANNEL_GEN_DEVICE="${VAL_CHANNEL_GEN_DEVICE:-cpu}"   # auto|cpu|gpu
@@ -59,7 +57,6 @@ COMMON=(
   --require_gpu
   --channel_gen_device gpu
   --train_channels_outside_graph 1
-  --channel_cache_device "${CHANNEL_CACHE_DEVICE}"
   --val_fixed_channels 1
   --val_fixed_start_idx 1
   --val_channel_gen_device "${VAL_CHANNEL_GEN_DEVICE}"

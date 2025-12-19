@@ -439,134 +439,6 @@ def _mix_scenario_datasets(
     return tf.data.Dataset.sample_from_datasets(ds_list, weights=weights, seed=int(seed))
 
 
-def _cache_allocation_weights(
-    scenarios: list[str],
-    *,
-    scenario_weights: dict[str, float],
-    scenario_curriculum_phases: list[tuple[int, dict[str, float]]] | None,
-) -> dict[str, float]:
-    """
-    Weights used to split CHANNEL_CACHE_SIZE across scenarios.
-
-    - No curriculum: use current scenario_weights
-    - Curriculum: use epoch-weighted average of phase weights
-    """
-    scenarios = [_canonical_scenario_name(s) for s in scenarios]
-    if scenario_curriculum_phases is None:
-        return {s: float(scenario_weights.get(s, 0.0)) for s in scenarios}
-
-    total_epochs = float(sum(int(ep) for ep, _ in scenario_curriculum_phases))
-    if total_epochs <= 0.0:
-        return {s: 1.0 for s in scenarios}
-
-    agg = {s: 0.0 for s in scenarios}
-    for ep, w in scenario_curriculum_phases:
-        ep_f = float(int(ep))
-        for s in scenarios:
-            agg[s] += ep_f * float(w.get(s, 0.0))
-
-    total = float(sum(agg.values()))
-    if total <= 0.0:
-        return {s: 1.0 for s in scenarios}
-    return {s: float(v) / total for s, v in agg.items()}
-
-
-def _allocate_cache_counts(
-    total_cache_batches: int,
-    scenarios: list[str],
-    *,
-    allocation_weights: dict[str, float],
-) -> dict[str, int]:
-    """
-    Allocate `total_cache_batches` across scenarios, ensuring at least 1 per scenario.
-    """
-    scenarios = [_canonical_scenario_name(s) for s in scenarios]
-    total_cache_batches = int(total_cache_batches)
-    if total_cache_batches <= 0:
-        return {s: 0 for s in scenarios}
-    if total_cache_batches < len(scenarios):
-        raise ValueError(
-            f"CHANNEL_CACHE_SIZE={total_cache_batches} is < num_scenarios={len(scenarios)}. "
-            "Increase CHANNEL_CACHE_SIZE or reduce SCENARIOS."
-        )
-
-    weights = {s: float(allocation_weights.get(s, 0.0)) for s in scenarios}
-    if float(sum(weights.values())) <= 0.0:
-        weights = {s: 1.0 for s in scenarios}
-
-    raw = {s: float(total_cache_batches) * float(weights[s]) for s in scenarios}
-    base = {s: int(raw[s]) for s in scenarios}
-    remaining = int(total_cache_batches - sum(base.values()))
-    if remaining > 0:
-        order = sorted(scenarios, key=lambda s: (raw[s] - base[s]), reverse=True)
-        for i in range(remaining):
-            base[order[i % len(order)]] += 1
-
-    # Ensure at least 1 per scenario by shifting from the largest.
-    for s in scenarios:
-        if base[s] <= 0:
-            donor = max(scenarios, key=lambda k: base[k])
-            if base[donor] <= 1:
-                break
-            base[donor] -= 1
-            base[s] = 1
-
-    # Final fixup to ensure exact sum.
-    diff = int(total_cache_batches - sum(base.values()))
-    if diff != 0:
-        order = sorted(scenarios, key=lambda s: base[s], reverse=(diff < 0))
-        for i in range(abs(diff)):
-            k = order[i % len(order)]
-            base[k] += 1 if diff > 0 else -1
-    return base
-
-
-def _build_scenario_channel_cache(
-    config,
-    *,
-    scenarios: list[str],
-    cache_counts: dict[str, int],
-    batch_size: int,
-    num_time_samples: int,
-    sampling_frequency: float,
-) -> dict[str, list[tf.Tensor]]:
-    """
-    Pre-generate channel batches per scenario and keep them in memory.
-    """
-    scenarios = [_canonical_scenario_name(s) for s in scenarios]
-    gen_device = _resolve_channel_device(config)
-    cache_device_req = getattr(config, "CHANNEL_CACHE_DEVICE", "auto")
-    cache_device = _resolve_device_request(cache_device_req, purpose="channel cache storage")
-
-    caches: dict[str, list[tf.Tensor]] = {}
-    print(
-        "\nPre-generating training channel cache (one scenario per batch):\n"
-        f"  total={sum(int(cache_counts.get(s, 0)) for s in scenarios)} batches, "
-        f"gen_device={gen_device}, cache_device={cache_device}"
-    )
-    for scenario in scenarios:
-        n = int(cache_counts.get(scenario, 0) or 0)
-        if n <= 0:
-            continue
-        ch_model = _create_scenario_channel_model(config, scenario)
-        caches[scenario] = []
-        for _ in tqdm(range(n), desc=f"Caching channels {scenario}"):
-            with tf.device(gen_device):
-                ch = ch_model.generate_channel(
-                    int(batch_size),
-                    num_time_samples=int(num_time_samples),
-                    sampling_frequency=float(sampling_frequency),
-                )
-            if cache_device == "/CPU:0":
-                with tf.device("/CPU:0"):
-                    ch = tf.identity(ch)
-            caches[scenario].append(ch)
-    if not caches:
-        raise RuntimeError("Channel cache requested but no cached batches were produced.")
-    print("✓ Training channel cache ready")
-    return caches
-
-
 def train(
     config,
     checkpoint_dir=None,
@@ -987,45 +859,16 @@ def train(
                         ]
                 print("✓ Fixed validation set ready")
 
-        # Per-scenario training: optionally pre-generate a channel cache on GPU before training starts.
-        scenario_cache = None
-
         train_scenarios = [
             _canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
         ]
-        cache_size_total = int(getattr(config, "CHANNEL_CACHE_SIZE", 0) or 0)
-        if use_scenario_ds and cache_size_total > 0:
-            if not bool(getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False)):
-                print(
-                    "WARNING: CHANNEL_CACHE_SIZE>0 requires TRAIN_CHANNELS_OUTSIDE_GRAPH=1. "
-                    "Disabling channel caching."
-                )
-            else:
-                alloc_w = _cache_allocation_weights(
-                    train_scenarios,
-                    scenario_weights=scenario_weights,
-                    scenario_curriculum_phases=scenario_curriculum_phases,
-                )
-                cache_counts = _allocate_cache_counts(
-                    cache_size_total,
-                    train_scenarios,
-                    allocation_weights=alloc_w,
-                )
-                scenario_cache = _build_scenario_channel_cache(
-                    config,
-                    scenarios=train_scenarios,
-                    cache_counts=cache_counts,
-                    batch_size=int(config.BATCH_SIZE),
-                    num_time_samples=int(num_time_samples),
-                    sampling_frequency=float(sampling_frequency),
-                )
 
         # Per-scenario tf.data pipeline: one scenario per batch, sampled by weights.
         train_scenario_iter = None
         per_scenario_datasets = None
         per_scenario_scenarios = None
         current_curriculum_phase = None
-        if use_scenario_ds and scenario_cache is None:
+        if use_scenario_ds:
             per_scenario_datasets, per_scenario_scenarios = _build_per_scenario_datasets(
                 config,
                 batch_size=int(config.BATCH_SIZE),
@@ -1109,14 +952,13 @@ def train(
                     current_curriculum_phase = phase_idx
                     scenario_weights = dict(phase_weights)
                     config.SCENARIO_WEIGHTS = dict(scenario_weights)
-                    if scenario_cache is None:
-                        train_scenario_ds = _mix_scenario_datasets(
-                            per_scenario_datasets,
-                            per_scenario_scenarios,
-                            scenario_weights=scenario_weights,
-                            seed=seed + int(phase_idx),
-                        )
-                        train_scenario_iter = iter(train_scenario_ds)
+                    train_scenario_ds = _mix_scenario_datasets(
+                        per_scenario_datasets,
+                        per_scenario_scenarios,
+                        scenario_weights=scenario_weights,
+                        seed=seed + int(phase_idx),
+                    )
+                    train_scenario_iter = iter(train_scenario_ds)
 
                     active = [
                         s
@@ -1155,31 +997,23 @@ def train(
             epoch_bf_gain = 0.0
 
             if use_scenario_ds:
-                if scenario_cache is not None:
-                    cache_scenarios = [s for s in train_scenarios if s in scenario_cache]
-                    if not cache_scenarios:
-                        raise RuntimeError("Scenario cache is empty for the active scenarios.")
-                    cache_weights = [float(scenario_weights.get(s, 0.0)) for s in cache_scenarios]
-                    if float(sum(cache_weights)) <= 0.0:
-                        raise RuntimeError("Scenario weights sum to 0 for cached scenarios.")
+                if train_scenario_iter is None:
+                    raise RuntimeError(
+                        "Per-scenario training requested but no dataset iterator is available."
+                    )
+                # One scenario per batch, chosen by the configured weights (online channel generation).
+                pbar = tqdm(range(steps_per_epoch), desc="Training")
+                for step in pbar:
+                    channels, _scenario_id = next(train_scenario_iter)
+                    snr_db = sample_snr(config)
 
-                    pbar = tqdm(range(steps_per_epoch), desc="Training")
-                    for step in pbar:
-                        scenario = random.choices(cache_scenarios, weights=cache_weights, k=1)[0]
-                        cache_list = scenario_cache[scenario]
-                        cache_idx = tf.random.uniform(
-                            [], 0, len(cache_list), dtype=tf.int32
-                        ).numpy()
-                        channels = cache_list[int(cache_idx)]
-                        snr_db = sample_snr(config)
-
-                        loss, bf_gain_db, grad_norm, update_skipped = train_step(
-                            model,
-                            optimizer,
-                            config.BATCH_SIZE,
-                            snr_db,
-                            channels=channels,
-                        )
+                    loss, bf_gain_db, grad_norm, update_skipped = train_step(
+                        model,
+                        optimizer,
+                        config.BATCH_SIZE,
+                        snr_db,
+                        channels=channels,
+                    )
 
                     loss_val = float(loss.numpy())
                     bf_gain_val = float(bf_gain_db.numpy())
@@ -1221,189 +1055,61 @@ def train(
                             tf.summary.scalar(
                                 "train/learning_rate", _current_learning_rate(optimizer), step=global_step
                             )
-                elif train_scenario_iter is not None:
-                    # One scenario per batch, chosen by the configured weights (online channel generation).
-                    pbar = tqdm(range(steps_per_epoch), desc="Training")
-                    for step in pbar:
-                        channels, _scenario_id = next(train_scenario_iter)
-                        snr_db = sample_snr(config)
-
-                        loss, bf_gain_db, grad_norm, update_skipped = train_step(
-                            model,
-                            optimizer,
-                            config.BATCH_SIZE,
-                            snr_db,
-                            channels=channels,
-                        )
-
-                        loss_val = float(loss.numpy())
-                        bf_gain_val = float(bf_gain_db.numpy())
-                        grad_norm_val = float(grad_norm.numpy())
-                        skipped_val = int(update_skipped.numpy())
-
-                        epoch_loss += loss_val
-                        epoch_bf_gain += bf_gain_val
-                        global_step += 1
-
-                        if skipped_val:
-                            skipped_steps_in_row += 1
-                            max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
-                            if skipped_steps_in_row >= max_skips:
-                                _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
-                        else:
-                            skipped_steps_in_row = 0
-
-                        gain_norm = -loss
-                        gain_norm_val = -loss_val
-                        pbar_dict = {
-                            'loss': f'{loss_val:.4f}',
-                            'gain_norm': f'{gain_norm_val:.4f}',
-                            'BF_gain': f'{bf_gain_val:.2f} dB',
-                            'grad_norm': f'{grad_norm_val:.3f}',
-                            'skipped': str(skipped_val),
-                        }
-                        pbar.set_postfix(pbar_dict)
-
-                        if step % 10 == 0:
-                            with summary_writer.as_default():
-                                tf.summary.scalar("train/loss", loss, step=global_step)
-                                tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                                tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                                tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
-                                tf.summary.scalar(
-                                    "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
-                                )
-                                tf.summary.scalar(
-                                    "train/learning_rate", _current_learning_rate(optimizer), step=global_step
-                                )
-                else:
-                    raise RuntimeError(
-                        "Per-scenario training requested but no scenario cache or dataset iterator is available."
-                    )
             elif getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
                 # Legacy per-batch training: generate channels in Python (mixed scenarios within batch).
-                cache_size = getattr(config, "CHANNEL_CACHE_SIZE", 0)
+                pbar = tqdm(range(steps_per_epoch), desc="Training")
+                for step in pbar:
+                    channels, _, _ = model.generate_channels(config.BATCH_SIZE)
+                    snr_db = sample_snr(config)
 
-                if cache_size > 0:
-                    # Pre-generate channel cache at epoch start
-                    if epoch == start_epoch or not hasattr(train, '_channel_cache'):
-                        print(f"Pre-generating {cache_size} channel batches for cache...")
-                        train._channel_cache = []
-                        for _ in tqdm(range(cache_size), desc="Caching channels"):
-                            channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                            train._channel_cache.append(channels)
-                        print(f"✓ Channel cache ready ({cache_size} batches)")
+                    loss, bf_gain_db, grad_norm, update_skipped = train_step(
+                        model,
+                        optimizer,
+                        config.BATCH_SIZE,
+                        snr_db,
+                        channels=channels,
+                    )
 
-                    # Training using cached channels (random sampling)
-                    pbar = tqdm(range(steps_per_epoch), desc="Training")
-                    for step in pbar:
-                        cache_idx = tf.random.uniform([], 0, cache_size, dtype=tf.int32).numpy()
-                        channels = train._channel_cache[cache_idx]
-                        snr_db = sample_snr(config)
+                    loss_val = float(loss.numpy())
+                    bf_gain_val = float(bf_gain_db.numpy())
+                    grad_norm_val = float(grad_norm.numpy())
+                    skipped_val = int(update_skipped.numpy())
 
-                        loss, bf_gain_db, grad_norm, update_skipped = train_step(
-                            model,
-                            optimizer,
-                            config.BATCH_SIZE,
-                            snr_db,
-                            channels=channels,
-                        )
+                    epoch_loss += loss_val
+                    epoch_bf_gain += bf_gain_val
+                    global_step += 1
 
-                        loss_val = float(loss.numpy())
-                        bf_gain_val = float(bf_gain_db.numpy())
-                        grad_norm_val = float(grad_norm.numpy())
-                        skipped_val = int(update_skipped.numpy())
+                    if skipped_val:
+                        skipped_steps_in_row += 1
+                        max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
+                        if skipped_steps_in_row >= max_skips:
+                            _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
+                    else:
+                        skipped_steps_in_row = 0
 
-                        epoch_loss += loss_val
-                        epoch_bf_gain += bf_gain_val
-                        global_step += 1
+                    gain_norm = -loss
+                    gain_norm_val = -loss_val
+                    pbar_dict = {
+                        'loss': f'{loss_val:.4f}',
+                        'gain_norm': f'{gain_norm_val:.4f}',
+                        'BF_gain': f'{bf_gain_val:.2f} dB',
+                        'grad_norm': f'{grad_norm_val:.3f}',
+                        'skipped': str(skipped_val),
+                    }
+                    pbar.set_postfix(pbar_dict)
 
-                        if skipped_val:
-                            skipped_steps_in_row += 1
-                            max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
-                            if skipped_steps_in_row >= max_skips:
-                                _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
-                        else:
-                            skipped_steps_in_row = 0
-
-                        gain_norm = -loss
-                        gain_norm_val = -loss_val
-                        pbar_dict = {
-                            'loss': f'{loss_val:.4f}',
-                            'gain_norm': f'{gain_norm_val:.4f}',
-                            'BF_gain': f'{bf_gain_val:.2f} dB',
-                            'grad_norm': f'{grad_norm_val:.3f}',
-                            'skipped': str(skipped_val),
-                        }
-                        pbar.set_postfix(pbar_dict)
-
-                        if step % 10 == 0:
-                            with summary_writer.as_default():
-                                tf.summary.scalar("train/loss", loss, step=global_step)
-                                tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                                tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                                tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
-                                tf.summary.scalar(
-                                    "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
-                                )
-                                tf.summary.scalar(
-                                    "train/learning_rate", _current_learning_rate(optimizer), step=global_step
-                                )
-                else:
-                    # No caching - generate fresh channels each iteration (slow but max diversity)
-                    pbar = tqdm(range(steps_per_epoch), desc="Training")
-                    for step in pbar:
-                        channels, _, _ = model.generate_channels(config.BATCH_SIZE)
-                        snr_db = sample_snr(config)
-
-                        loss, bf_gain_db, grad_norm, update_skipped = train_step(
-                            model,
-                            optimizer,
-                            config.BATCH_SIZE,
-                            snr_db,
-                            channels=channels,
-                        )
-
-                        loss_val = float(loss.numpy())
-                        bf_gain_val = float(bf_gain_db.numpy())
-                        grad_norm_val = float(grad_norm.numpy())
-                        skipped_val = int(update_skipped.numpy())
-
-                        epoch_loss += loss_val
-                        epoch_bf_gain += bf_gain_val
-                        global_step += 1
-
-                        if skipped_val:
-                            skipped_steps_in_row += 1
-                            max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
-                            if skipped_steps_in_row >= max_skips:
-                                _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
-                        else:
-                            skipped_steps_in_row = 0
-
-                        gain_norm = -loss
-                        gain_norm_val = -loss_val
-                        pbar_dict = {
-                            'loss': f'{loss_val:.4f}',
-                            'gain_norm': f'{gain_norm_val:.4f}',
-                            'BF_gain': f'{bf_gain_val:.2f} dB',
-                            'grad_norm': f'{grad_norm_val:.3f}',
-                            'skipped': str(skipped_val),
-                        }
-                        pbar.set_postfix(pbar_dict)
-
-                        if step % 10 == 0:
-                            with summary_writer.as_default():
-                                tf.summary.scalar("train/loss", loss, step=global_step)
-                                tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                                tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                                tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
-                                tf.summary.scalar(
-                                    "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
-                                )
-                                tf.summary.scalar(
-                                    "train/learning_rate", _current_learning_rate(optimizer), step=global_step
-                                )
+                    if step % 10 == 0:
+                        with summary_writer.as_default():
+                            tf.summary.scalar("train/loss", loss, step=global_step)
+                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
+                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
+                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
+                            tf.summary.scalar(
+                                "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/learning_rate", _current_learning_rate(optimizer), step=global_step
+                            )
             else:
                 # Fallback: generate channels inside the training step (legacy graph mode).
                 pbar = tqdm(range(steps_per_epoch), desc="Training")
@@ -1733,19 +1439,6 @@ if __name__ == "__main__":
         help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
     )
     parser.add_argument(
-        '--channel_cache_size',
-        type=int,
-        default=None,
-        help='Number of channel batches to pre-generate and cache (0=disabled). Default: 100.',
-    )
-    parser.add_argument(
-        '--channel_cache_device',
-        type=str,
-        default=None,
-        choices=['auto', 'cpu', 'gpu'],
-        help='Where to store cached channel tensors (overrides Config.CHANNEL_CACHE_DEVICE).',
-    )
-    parser.add_argument(
         '--val_fixed_channels',
         type=int,
         default=None,
@@ -1815,10 +1508,6 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
     if args.xla_jit is not None:
         Config.XLA_JIT_COMPILE = bool(args.xla_jit)
-    if args.channel_cache_size is not None:
-        Config.CHANNEL_CACHE_SIZE = args.channel_cache_size
-    if args.channel_cache_device is not None:
-        Config.CHANNEL_CACHE_DEVICE = str(args.channel_cache_device)
     if args.val_fixed_channels is not None:
         Config.VAL_USE_FIXED_CHANNELS = bool(int(args.val_fixed_channels))
     if args.val_fixed_start_idx is not None:
