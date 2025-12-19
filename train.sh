@@ -13,7 +13,7 @@ set -euo pipefail
 
 RUN_NAME="${RUN_NAME:-final_curriculum}"
 SEED="${SEED:-42}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-25}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 T="${T:-16}"
 SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
@@ -23,10 +23,6 @@ RESET_OPTIMIZER="${RESET_OPTIMIZER:-0}"
 
 # Default: balanced sampling across scenarios (used if curriculum is disabled).
 SCENARIO_WEIGHTS="${SCENARIO_WEIGHTS:-UMi=0.333333,UMa=0.333333,RMa=0.333333}"
-
-# Curriculum schedule (phases in one run).
-# Disable by setting: SCENARIO_CURRICULUM=0
-SCENARIO_CURRICULUM="${SCENARIO_CURRICULUM:-1}"
 
 # Phase lengths (epochs). Main defaults to "EPOCHS - warmup1 - warmup2".
 WARMUP1_EPOCHS="${WARMUP1_EPOCHS:-3}"
@@ -66,14 +62,25 @@ COMMON=(
   --reset_optimizer "${RESET_OPTIMIZER}"
 )
 
-if [ "${SCENARIO_CURRICULUM}" = "1" ]; then
+
   python train.py "${COMMON[@]}" \
     --scenario_curriculum \
     --curriculum_epochs "${CURRICULUM_EPOCHS}" \
     --curriculum_weights "${CURRICULUM_WEIGHTS}" \
     "${EXTRA_ARGS[@]}"
-else
   python train.py "${COMMON[@]}" \
-    --scenario_weights "${SCENARIO_WEIGHTS}" \
+    --scenario_curriculum \
+    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
+    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
     "${EXTRA_ARGS[@]}"
-fi
+  python train.py "${COMMON[@]}" \
+    --scenario_curriculum \
+    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
+    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
+    "${EXTRA_ARGS[@]}"  
+  python train.py "${COMMON[@]}" \
+    --scenario_curriculum \
+    --curriculum_epochs "${CURRICULUM_EPOCHS}" \
+    --curriculum_weights "${CURRICULUM_WEIGHTS}" \
+    "${EXTRA_ARGS[@]}"
+
