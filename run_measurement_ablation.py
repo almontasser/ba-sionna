@@ -2,7 +2,7 @@
 Quick measurement-ablation runner to check whether the learned policy actually
 depends on the sensing measurements y_t.
 
-We evaluate on fixed channel realizations and fixed BS sweep starts, then apply:
+We evaluate on fresh channel realizations each batch, then apply:
   - none: normal operation
   - zero: y_t := 0
   - noise_only: y_t := w_t^H n_t
@@ -12,12 +12,10 @@ If performance is similar across ablations, the model is effectively ignoring y_
 """
 
 import argparse
-import tensorflow as tf
-
 from config import Config
 from figures_evaluators.common import (
     load_c3_model,
-    evaluate_at_snr_fixed_channels_with_ablation,
+    evaluate_at_snr_with_ablation,
 )
 
 
@@ -34,29 +32,13 @@ def main():
     checkpoint_dir = args.checkpoint_dir or f"./checkpoints_C3_T{Config.T}"
     model = load_c3_model(Config, checkpoint_dir, scenarios=[args.scenario])
 
-    num_time_samples = 1
-    sampling_frequency = 1.0
-    if getattr(Config, "MOBILITY_ENABLE", False):
-        nts = getattr(Config, "MOBILITY_NUM_TIME_SAMPLES", None)
-        num_time_samples = int(nts) if nts is not None else int(Config.T + 1)
-        sampling_frequency = float(getattr(Config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
-    channels = model.channel_model.generate_channel(
-        int(args.num_samples),
-        num_time_samples=num_time_samples,
-        sampling_frequency=sampling_frequency,
-    )
-    start_idx = tf.random.uniform(
-        [int(args.num_samples)], minval=0, maxval=int(Config.NCB), dtype=tf.int32
-    )
-
     for ablation in ["none", "zero", "noise_only", "shuffle"]:
-        r = evaluate_at_snr_fixed_channels_with_ablation(
+        r = evaluate_at_snr_with_ablation(
             model,
-            channels,
             args.snr_db,
+            args.num_samples,
             args.batch_size,
             args.target_snr_db,
-            start_idx=start_idx,
             measurement_ablation=ablation,
         )
         print(

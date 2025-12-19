@@ -2,31 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
-import tensorflow as tf
-
-from figures_evaluators.common import evaluate_at_snr_fixed_channels, load_c3_model
-
-
-def _generate_channels_in_chunks(
-    model, num_samples, chunk_size, *, num_time_samples, sampling_frequency
-):
-    num_samples = int(num_samples)
-    chunk_size = int(chunk_size)
-    if num_samples <= 0:
-        raise ValueError("num_samples must be > 0")
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be > 0")
-
-    chunks = []
-    for start in range(0, num_samples, chunk_size):
-        bs = min(chunk_size, num_samples - start)
-        h = model.generate_channel(
-            int(bs),
-            num_time_samples=int(num_time_samples),
-            sampling_frequency=float(sampling_frequency),
-        )
-        chunks.append(h)
-    return tf.concat(chunks, axis=0)
+from figures_evaluators.common import evaluate_at_snr, load_c3_model
 
 
 def generate_figure_4_scenario_comparison(
@@ -63,49 +39,10 @@ def generate_figure_4_scenario_comparison(
         print(f"\nLoading C3 model for evaluation on {scenario}...")
         model = load_c3_model(config, checkpoint_dir, scenarios=[scenario])
 
-        # Pre-generate a fixed set of channels for this scenario, reused across all SNR points.
-        # This makes the SNR trend reflect measurement noise, not resampling variance.
-        num_time_samples = 1
-        sampling_frequency = 1.0
-        if getattr(config, "MOBILITY_ENABLE", False):
-            nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
-            num_time_samples = (
-                int(nts) if nts is not None else int(model.num_sensing_steps + 1)
-            )
-            sampling_frequency = float(
-                getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0)
-            )
-        # Generate fixed channels on CPU to avoid GPU OOM when MOBILITY_ENABLE=True
-        # (channels can be ~O(num_samples*(T+1)*NRX*NTX)).
-        original_gen_device = getattr(model.channel_model, "generation_device", None)
-        try:
-            if original_gen_device is not None:
-                model.channel_model.generation_device = "cpu"
-            fixed_channels = _generate_channels_in_chunks(
-                model.channel_model,
-                int(num_samples),
-                chunk_size=max(1, int(batch_size)),
-                num_time_samples=num_time_samples,
-                sampling_frequency=sampling_frequency,
-            )
-        finally:
-            if original_gen_device is not None:
-                model.channel_model.generation_device = original_gen_device
-        # Also fix the sweep start indices across SNR points (avoid extra randomness).
-        with tf.device("/CPU:0"):
-            fixed_start_idx = tf.random.uniform(
-                [int(num_samples)], minval=0, maxval=int(config.NCB), dtype=tf.int32
-            )
-
         print(f"Evaluating {scenario}...")
         for snr_db in tqdm(snr_range, desc=f"{scenario}"):
-            metrics = evaluate_at_snr_fixed_channels(
-                model,
-                fixed_channels,
-                float(snr_db),
-                batch_size,
-                target_snr_db,
-                start_idx=fixed_start_idx,
+            metrics = evaluate_at_snr(
+                model, float(snr_db), int(num_samples), batch_size, target_snr_db
             )
             results[scenario]["bf_gain"].append(metrics["mean_bf_gain_db"])
             results[scenario]["sat_prob"].append(metrics["satisfaction_prob"])

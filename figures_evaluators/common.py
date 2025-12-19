@@ -112,97 +112,35 @@ def evaluate_at_snr(model, snr_db, num_samples, batch_size, target_snr_db):
     return metrics.result()
 
 
-def evaluate_at_snr_fixed_channels(model, channels, snr_db, batch_size, target_snr_db, *, start_idx=None):
-    """
-    Evaluate a model at a specific SNR using a fixed set of channel realizations.
-
-    This is useful for Fig. 4-style plots where we want the SNR dependence to come
-    primarily from measurement noise (and the model's decisions), not from drawing
-    new channels for each SNR point.
-
-    Args:
-        model: BeamAlignmentModel instance
-        channels: Fixed channel matrices (num_samples, nrx, ntx)
-        snr_db: Per-antenna SNR in dB
-        batch_size: Batch size
-        target_snr_db: Target SNR threshold in dB (paper Eq. 6)
-        start_idx: Optional fixed BS sweep start indices (num_samples,)
-
-    Returns:
-        Dictionary with metrics
-    """
-    metrics = BeamAlignmentMetrics(target_snr_db=target_snr_db)
-
-    num_samples = int(channels.shape[0])
-    num_batches = max(1, (num_samples + batch_size - 1) // batch_size)
-
-    snr_linear = 10.0 ** (tf.cast(snr_db, tf.float32) / 10.0)
-    noise_power = 1.0 / snr_linear  # paper per-antenna SNR: sigma_n^2 = 1/SNR_ANT
-
-    for b in range(num_batches):
-        start = b * batch_size
-        end = min(num_samples, (b + 1) * batch_size)
-        ch_b = channels[start:end]
-        if start_idx is None:
-            start_b = None
-        else:
-            start_b = start_idx[start:end]
-
-        results = model.execute_beam_alignment(
-            ch_b,
-            noise_power,
-            training=False,
-            start_idx=start_b,
-        )
-        ch_final = results.get("channels_final", ch_b)
-        metrics.update(
-            ch_final,
-            results["final_tx_beams"],
-            results["final_rx_beams"],
-            noise_power=noise_power,
-        )
-
-    return metrics.result()
-
-
-def evaluate_at_snr_fixed_channels_with_ablation(
+def evaluate_at_snr_with_ablation(
     model,
-    channels,
     snr_db,
+    num_samples,
     batch_size,
     target_snr_db,
     *,
-    start_idx=None,
     measurement_ablation="none",
 ):
     """
-    Same as evaluate_at_snr_fixed_channels(), but applies a measurement ablation
-    inside the sensing loop (see BeamAlignmentModel.execute_beam_alignment()).
+    Evaluate a model at a specific SNR with a measurement ablation, generating
+    fresh channels each batch (no caching).
     """
     metrics = BeamAlignmentMetrics(target_snr_db=target_snr_db)
-
-    num_samples = int(channels.shape[0])
-    num_batches = max(1, (num_samples + batch_size - 1) // batch_size)
+    num_batches = max(1, num_samples // batch_size)
 
     snr_linear = 10.0 ** (tf.cast(snr_db, tf.float32) / 10.0)
     noise_power = 1.0 / snr_linear
 
-    for b in range(num_batches):
-        start = b * batch_size
-        end = min(num_samples, (b + 1) * batch_size)
-        ch_b = channels[start:end]
-        if start_idx is None:
-            start_b = None
-        else:
-            start_b = start_idx[start:end]
+    for _ in range(num_batches):
+        channels, _, _ = model.generate_channels(batch_size)
         results = model.execute_beam_alignment(
-            ch_b,
+            channels,
             noise_power,
             training=False,
-            start_idx=start_b,
             measurement_ablation=measurement_ablation,
+            snr_db=snr_db,
         )
-        ch_final = results.get("channels_final", ch_b)
+        ch_final = results.get("channels_final", channels)
         metrics.update(
             ch_final,
             results["final_tx_beams"],

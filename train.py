@@ -781,84 +781,6 @@ def train(
                 curriculum_bounds.append((start, end, dict(weights)))
                 cur = end
 
-        # Pre-generate a fixed validation set so epoch-to-epoch comparisons
-        # reflect learning, not resampling variance (mirrors Fig. 4 eval style).
-        val_channels_batches = None
-        val_channels_batches_by_scenario = None
-        val_start_idx_batches = None
-        if bool(getattr(config, "VAL_USE_FIXED_CHANNELS", False)):
-            if not bool(getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False)):
-                print(
-                    "WARNING: VAL_USE_FIXED_CHANNELS=1 requires TRAIN_CHANNELS_OUTSIDE_GRAPH=1. "
-                    "Disabling fixed validation channels."
-                )
-            else:
-                val_batches_eff = max(2, min(int(val_batches), 3))
-                val_batch_multiplier = int(getattr(config, "VAL_BATCH_MULTIPLIER", 2) or 2)
-                if val_batch_multiplier <= 0:
-                    raise ValueError(f"VAL_BATCH_MULTIPLIER must be >= 1, got {val_batch_multiplier}.")
-                val_batch_size = int(config.BATCH_SIZE) * int(val_batch_multiplier)
-                val_gen_device = getattr(
-                    config,
-                    "VAL_CHANNEL_GENERATION_DEVICE",
-                    getattr(config, "CHANNEL_GENERATION_DEVICE", "auto"),
-                )
-                if use_scenario_ds:
-                    val_channels_batches_by_scenario = {}
-                    val_scenarios = [
-                        _canonical_scenario_name(s)
-                        for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
-                    ]
-                    print(
-                        f"\nPre-generating per-scenario fixed validation sets: {val_batches_eff} batches "
-                        f"each (batch_size={val_batch_size})..."
-                    )
-                    for scenario in val_scenarios:
-                        ch_model = _create_scenario_channel_model(
-                            config, scenario, generation_device=val_gen_device
-                        )
-                        batches = []
-                        for _ in tqdm(range(val_batches_eff), desc=f"Val channels {scenario}"):
-                            ch = ch_model.generate_channel(
-                                val_batch_size,
-                                num_time_samples=int(num_time_samples),
-                                sampling_frequency=float(sampling_frequency),
-                            )
-                            batches.append(ch)
-                        val_channels_batches_by_scenario[scenario] = batches
-                else:
-                    print(
-                        f"\nPre-generating fixed validation set: {val_batches_eff} batches "
-                        f"(batch_size={val_batch_size})..."
-                    )
-                    scenario = _canonical_scenario_name(
-                        list(getattr(config, "SCENARIOS", ["UMi"]))[0]
-                    )
-                    ch_model = _create_scenario_channel_model(
-                        config, scenario, generation_device=val_gen_device
-                    )
-                    val_channels_batches = []
-                    for _ in tqdm(range(val_batches_eff), desc="Val channels"):
-                        ch = ch_model.generate_channel(
-                            val_batch_size,
-                            num_time_samples=int(num_time_samples),
-                            sampling_frequency=float(sampling_frequency),
-                        )
-                        val_channels_batches.append(ch)
-
-                if bool(getattr(config, "VAL_USE_FIXED_START_IDX", False)):
-                    with tf.device("/CPU:0"):
-                        val_start_idx_batches = [
-                            tf.random.uniform(
-                                [val_batch_size],
-                                minval=0,
-                                maxval=int(config.NCB),
-                                dtype=tf.int32,
-                            )
-                            for _ in range(val_batches_eff)
-                        ]
-                print("✓ Fixed validation set ready")
-
         train_scenarios = [
             _canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
         ]
@@ -1170,118 +1092,29 @@ def train(
             
             print(f"\nTraining - Loss: {avg_loss:.4f}, BF Gain: {avg_bf_gain:.2f} dB")
             
-            # Validation
-            if use_scenario_ds and val_channels_batches_by_scenario is not None:
-                print("Validating (per scenario)...")
-                per_metrics: dict[str, dict[str, float]] = {}
-                scenarios_eval = (
-                    list(train_scenarios)
-                    if isinstance(train_scenarios, list) and train_scenarios
-                    else list(val_channels_batches_by_scenario.keys())
+            # Validation (fresh channels each epoch; no fixed caching).
+            print("Validating...")
+            val_metrics = validate(
+                model,
+                val_batches,
+                config.BATCH_SIZE,
+                config.SNR_TRAIN,
+                config.SNR_TARGET,
+            )
+
+            print(f"Validation - Loss: {val_metrics['val_loss']:.4f}")
+            print(
+                f"             BF Gain: {val_metrics['mean_bf_gain_db']:.2f} ± {val_metrics['std_bf_gain_db']:.2f} dB"
+            )
+            print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
+
+            # Log to TensorBoard
+            with summary_writer.as_default():
+                tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
+                tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
+                tf.summary.scalar(
+                    "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
                 )
-                for scenario in scenarios_eval:
-                    if scenario not in val_channels_batches_by_scenario:
-                        continue
-                    m = validate(
-                        model,
-                        val_batches,
-                        config.BATCH_SIZE,
-                        config.SNR_TRAIN,
-                        config.SNR_TARGET,
-                        channels_batches=val_channels_batches_by_scenario[scenario],
-                        start_idx_batches=val_start_idx_batches,
-                    )
-                    per_metrics[scenario] = m
-                    print(
-                        f"  {scenario}: loss={m['val_loss']:.4f}, "
-                        f"BF_gain={m['mean_bf_gain_db']:.2f}±{m['std_bf_gain_db']:.2f} dB, "
-                        f"sat={m['satisfaction_prob']:.3f}"
-                    )
-                    with summary_writer.as_default():
-                        tf.summary.scalar(f"val/{scenario}/loss", m["val_loss"], step=global_step)
-                        tf.summary.scalar(
-                            f"val/{scenario}/bf_gain_db", m["mean_bf_gain_db"], step=global_step
-                        )
-                        tf.summary.scalar(
-                            f"val/{scenario}/satisfaction_prob",
-                            m["satisfaction_prob"],
-                            step=global_step,
-                        )
-
-                if not per_metrics:
-                    raise RuntimeError("Per-scenario validation requested but no scenario metrics were produced.")
-
-                # Macro-average across scenarios (robustness target).
-                n = float(len(per_metrics))
-                loss_macro = float(sum(m["val_loss"] for m in per_metrics.values()) / n)
-                bf_macro = float(sum(m["mean_bf_gain_db"] for m in per_metrics.values()) / n)
-                std_macro = float(sum(m["std_bf_gain_db"] for m in per_metrics.values()) / n)
-                sat_macro = float(sum(m["satisfaction_prob"] for m in per_metrics.values()) / n)
-
-                # Weighted average using current sampling weights (useful for curriculum phases).
-                total_w = float(sum(float(scenario_weights.get(s, 0.0)) for s in per_metrics.keys()))
-                if total_w > 0.0:
-                    bf_weighted = float(
-                        sum(
-                            float(scenario_weights.get(s, 0.0)) * float(m["mean_bf_gain_db"])
-                            for s, m in per_metrics.items()
-                        )
-                        / total_w
-                    )
-                    sat_weighted = float(
-                        sum(
-                            float(scenario_weights.get(s, 0.0)) * float(m["satisfaction_prob"])
-                            for s, m in per_metrics.items()
-                        )
-                        / total_w
-                    )
-                else:
-                    bf_weighted = bf_macro
-                    sat_weighted = sat_macro
-
-                val_metrics = {
-                    "val_loss": loss_macro,
-                    "mean_bf_gain_db": bf_macro,
-                    "std_bf_gain_db": std_macro,
-                    "satisfaction_prob": sat_macro,
-                }
-
-                print(f"Validation (macro) - Loss: {loss_macro:.4f}")
-                print(f"                 BF Gain: {bf_macro:.2f} ± {std_macro:.2f} dB")
-                print(f"                 Satisfaction Prob: {sat_macro:.3f}")
-
-                with summary_writer.as_default():
-                    # Keep legacy keys as macro-averages for easy comparison.
-                    tf.summary.scalar("val/loss", loss_macro, step=global_step)
-                    tf.summary.scalar("val/bf_gain_db", bf_macro, step=global_step)
-                    tf.summary.scalar("val/satisfaction_prob", sat_macro, step=global_step)
-                    tf.summary.scalar("val/bf_gain_db_weighted", bf_weighted, step=global_step)
-                    tf.summary.scalar("val/satisfaction_prob_weighted", sat_weighted, step=global_step)
-            else:
-                print("Validating...")
-                val_metrics = validate(
-                    model,
-                    val_batches,
-                    config.BATCH_SIZE,
-                    config.SNR_TRAIN,
-                    config.SNR_TARGET,
-                    channels_batches=val_channels_batches,
-                    start_idx_batches=val_start_idx_batches,
-                )
-
-                print(f"Validation - Loss: {val_metrics['val_loss']:.4f}")
-                print(
-                    f"             BF Gain: {val_metrics['mean_bf_gain_db']:.2f} ± {val_metrics['std_bf_gain_db']:.2f} dB"
-                )
-                print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
-
-                # Log to TensorBoard
-                with summary_writer.as_default():
-                    tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
-                    tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
-                    tf.summary.scalar(
-                        "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
-                    )
             
             # Update epoch counter in the checkpoint (store "next epoch to run").
             epoch_var.assign(int(epoch) + 1)
@@ -1438,33 +1271,6 @@ if __name__ == "__main__":
         choices=[0, 1],
         help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
     )
-    parser.add_argument(
-        '--val_fixed_channels',
-        type=int,
-        default=None,
-        choices=[0, 1],
-        help='If 1, use fixed validation channels across epochs; overrides Config.VAL_USE_FIXED_CHANNELS',
-    )
-    parser.add_argument(
-        '--val_fixed_start_idx',
-        type=int,
-        default=None,
-        choices=[0, 1],
-        help='If 1, use fixed validation sweep start indices; overrides Config.VAL_USE_FIXED_START_IDX',
-    )
-    parser.add_argument(
-        '--val_channel_gen_device',
-        type=str,
-        default=None,
-        choices=['auto', 'cpu', 'gpu'],
-        help='Validation channel generation device placement (overrides Config.VAL_CHANNEL_GENERATION_DEVICE)',
-    )
-    parser.add_argument(
-        '--val_batch_multiplier',
-        type=int,
-        default=None,
-        help='Validation batch size multiplier (val_batch_size = batch_size * multiplier); overrides Config.VAL_BATCH_MULTIPLIER',
-    )
     parser.add_argument('--test_mode', action='store_true', help='Run in test mode (1 epoch)')
     
     args = parser.parse_args()
@@ -1508,17 +1314,6 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
     if args.xla_jit is not None:
         Config.XLA_JIT_COMPILE = bool(args.xla_jit)
-    if args.val_fixed_channels is not None:
-        Config.VAL_USE_FIXED_CHANNELS = bool(int(args.val_fixed_channels))
-    if args.val_fixed_start_idx is not None:
-        Config.VAL_USE_FIXED_START_IDX = bool(int(args.val_fixed_start_idx))
-    if args.val_channel_gen_device is not None:
-        Config.VAL_CHANNEL_GENERATION_DEVICE = args.val_channel_gen_device
-    if args.val_batch_multiplier is not None:
-        mult = int(args.val_batch_multiplier)
-        if mult <= 0:
-            raise ValueError(f"--val_batch_multiplier must be >= 1, got {mult}.")
-        Config.VAL_BATCH_MULTIPLIER = mult
     if args.seed is not None:
         Config.RANDOM_SEED = int(args.seed)
 

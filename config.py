@@ -175,14 +175,6 @@ class Config:
     # "log": optional surrogate for ablations/stability
     LOSS_TYPE = "paper"
 
-    # Validation stability (for comparable TensorBoard curves + LR ablations)
-    VAL_USE_FIXED_CHANNELS = True
-    VAL_USE_FIXED_START_IDX = True
-    # Fixed-validation generation can be memory-heavy on GPU (TR 38.901 CIR/CFR intermediates),
-    # so keep it configurable and default to CPU.
-    VAL_CHANNEL_GENERATION_DEVICE = "cpu"  # auto|cpu|gpu
-    VAL_BATCH_MULTIPLIER = 1  # val_batch_size = BATCH_SIZE * multiplier
-
     # ==================== Narrowband Mapping ====================
     # How to reduce the TR 38.901 CIR/frequency response to a narrowband H used in y_t.
     # "center": use DC/center-subcarrier (paper-consistent flat fading)
@@ -294,16 +286,6 @@ class Config:
         print(f"  LR scale: {getattr(cls, 'LR_SCALE', 1.0)}")
         print(f"  LR warmup epochs: {getattr(cls, 'LR_WARMUP_EPOCHS', 0)}")
         print(f"  Random seed: {getattr(cls, 'RANDOM_SEED', None)}")
-        print(
-            f"  Val fixed channels: {'on' if getattr(cls, 'VAL_USE_FIXED_CHANNELS', False) else 'off'}"
-        )
-        print(
-            f"  Val fixed start idx: {'on' if getattr(cls, 'VAL_USE_FIXED_START_IDX', False) else 'off'}"
-        )
-        print(f"  Val batch multiplier: {getattr(cls, 'VAL_BATCH_MULTIPLIER', 1)}")
-        print(
-            f"  Val channel gen device: {getattr(cls, 'VAL_CHANNEL_GENERATION_DEVICE', getattr(cls, 'CHANNEL_GENERATION_DEVICE', 'auto'))}"
-        )
         if cls.SNR_TRAIN_RANDOMIZE:
             print(
                 f"  Training SNR: {cls.SNR_TRAIN_RANGE[0]:.1f}-{cls.SNR_TRAIN_RANGE[1]:.1f} dB (randomized)"

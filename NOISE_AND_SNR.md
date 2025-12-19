@@ -118,7 +118,7 @@ thus the selected beams.
 
 ## 3) Evaluation / plotting: how noise is generated and used
 
-Evaluation uses the same `snr_db → noise_power` mapping, but there are two common modes:
+Evaluation uses the same `snr_db → noise_power` mapping. Current evaluations use:
 
 ### 3.1 “Fresh channels per batch” evaluation
 Used by `figures_evaluators/common.py:evaluate_at_snr()`:
@@ -133,17 +133,7 @@ This mode changes both:
 - measurement noise realizations `n`
 across batches.
 
-### 3.2 “Fixed channels, vary only noise” evaluation (Fig. 4 style)
-Used by `figures_evaluators/common.py:evaluate_at_snr_fixed_channels()`:
-
-- computes `noise_power = 1 / 10^(snr_db/10)` directly in the evaluator
-- calls `model.execute_beam_alignment(channels, noise_power, training=False, ...)`
-- metrics use the *same* `noise_power` to compute `SNR_RX`
-
-This mode is useful when you want the SNR trend to come mainly from changing the
-measurement noise level, not from drawing new channels at each SNR point.
-
-### 3.3 Where `SNR_RX` is computed for plots/metrics
+### 3.2 Where `SNR_RX` is computed for plots/metrics
 All satisfaction-based plots go through:
 
 - `metrics.py:BeamAlignmentMetrics.update(..., noise_power=...)`
@@ -157,8 +147,8 @@ and plot:
 - satisfaction probability
 against `snr_db`.
 
-### 3.4 Which figures use which evaluation mode
-- `figures_evaluators/figure4.py` uses `evaluate_at_snr_fixed_channels(...)` so only the **noise level** changes across SNR points.
+### 3.3 Which figures use which evaluation mode
+- `figures_evaluators/figure4.py` uses `evaluate_at_snr(...)`, so both **channels** and **noise** are resampled across batches.
 - `figures_evaluators/figure5.py` uses `evaluate_at_snr(...)`, so both **channels** and **noise** are resampled across batches.
 
 ---

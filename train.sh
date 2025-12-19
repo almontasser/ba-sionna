@@ -20,10 +20,6 @@ SCENARIOS="${SCENARIOS:-UMi,UMa,RMa}"
 
 RESUME="${RESUME:-1}"
 RESET_OPTIMIZER="${RESET_OPTIMIZER:-0}"
-# Fixed validation can be memory heavy on GPU (TR 38.901 CIR/CFR intermediates),
-# so keep it on CPU by default.
-VAL_CHANNEL_GEN_DEVICE="${VAL_CHANNEL_GEN_DEVICE:-cpu}"   # auto|cpu|gpu
-VAL_BATCH_MULTIPLIER="${VAL_BATCH_MULTIPLIER:-1}"         # val_batch_size = BATCH_SIZE * multiplier
 
 # Disable curriculum by setting: SCENARIO_CURRICULUM=0
 SCENARIO_CURRICULUM="${SCENARIO_CURRICULUM:-1}"
@@ -57,10 +53,6 @@ COMMON=(
   --require_gpu
   --channel_gen_device gpu
   --train_channels_outside_graph 1
-  --val_fixed_channels 1
-  --val_fixed_start_idx 1
-  --val_channel_gen_device "${VAL_CHANNEL_GEN_DEVICE}"
-  --val_batch_multiplier "${VAL_BATCH_MULTIPLIER}"
   --seed "${SEED}"
   --epochs "${EPOCHS}"
   --batch_size "${BATCH_SIZE}"
