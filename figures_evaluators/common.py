@@ -9,26 +9,21 @@ from checkpoint_utils import check_checkpoint_compatibility
 
 # ==================== Model Loading and Evaluation ====================
 
-def _resolve_checkpoint_dir(checkpoint_dir: str) -> str:
+def _candidate_checkpoint_dirs(checkpoint_dir: str) -> list[str]:
     if os.path.isdir(checkpoint_dir):
-        return checkpoint_dir
+        return [checkpoint_dir]
     parent = os.path.dirname(checkpoint_dir) or "."
     prefix = os.path.basename(checkpoint_dir)
     if not os.path.isdir(parent):
-        return checkpoint_dir
+        return []
     pattern = re.compile(rf"^{re.escape(prefix)}")
     matches = []
     for name in os.listdir(parent):
         path = os.path.join(parent, name)
         if os.path.isdir(path) and pattern.match(name):
             matches.append(path)
-    if not matches:
-        return checkpoint_dir
     matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    chosen = matches[0]
-    if chosen != checkpoint_dir:
-        print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{chosen}'")
-    return chosen
+    return matches
 
 
 def load_c3_model(
@@ -77,13 +72,19 @@ def load_c3_model(
     # Build model variables without generating TR 38.901 channels.
     model.build(None)
 
-    checkpoint_dir = _resolve_checkpoint_dir(checkpoint_dir)
-
     # Restore model weights only (training checkpoints may also include optimizer).
     checkpoint = tf.train.Checkpoint(model=model)
-    ckpt_manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=1)
+    candidate_dirs = _candidate_checkpoint_dirs(checkpoint_dir)
+    if not candidate_dirs:
+        candidate_dirs = [checkpoint_dir]
 
-    if ckpt_manager.latest_checkpoint:
+    ckpt_path = None
+    last_summary = None
+    for cand in candidate_dirs:
+        ckpt_manager = tf.train.CheckpointManager(checkpoint, cand, max_to_keep=1)
+        if not ckpt_manager.latest_checkpoint:
+            last_summary = f"No checkpoint found in '{cand}'."
+            continue
         ckpt_path = ckpt_manager.latest_checkpoint
         compat = check_checkpoint_compatibility(
             model,
@@ -91,20 +92,29 @@ def load_c3_model(
             require_all_trainable=True,
             require_ue_rnn_kernel=True,
         )
-        if not compat.ok:
+        if compat.ok:
+            if cand != checkpoint_dir and not os.path.isdir(checkpoint_dir):
+                print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{cand}'")
+            break
+        last_summary = (
+            f"Incompatible checkpoint: {ckpt_path}\n"
+            f"{compat.summary()}"
+        )
+        ckpt_path = None
+
+    if ckpt_path is None:
+        if last_summary:
             raise ValueError(
                 "Checkpoint is incompatible with the current model definition.\n"
-                f"Checkpoint: {ckpt_path}\n"
-                "Details:\n"
-                f"{compat.summary()}\n"
+                f"{last_summary}\n"
                 "Tip: retrain with the current config (or point to a matching checkpoint_dir)."
             )
-        checkpoint.restore(ckpt_path).expect_partial()
-    else:
         raise FileNotFoundError(
             f"No checkpoint found in '{checkpoint_dir}'. "
             f"Train first (e.g. python train.py -T {num_sensing_steps})."
         )
+
+    checkpoint.restore(ckpt_path).expect_partial()
 
     return model
 
