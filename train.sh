@@ -53,7 +53,7 @@ CURRICULUM_EPOCHS="${CURRICULUM_EPOCHS:-${WARMUP1_EPOCHS},${WARMUP2_EPOCHS},${MA
 CURRICULUM_WEIGHTS="${CURRICULUM_WEIGHTS:-${WARMUP1_WEIGHTS};${WARMUP2_WEIGHTS};${MAIN_WEIGHTS}}"
 
 # Optional passthrough args to `train.py`:
-#   bash train.sh --lr_schedule cosine_restarts --lr 0.003 --cosine_first_decay_epochs 13
+#   bash train.sh --lr_schedule cosine_restarts --lr 2e-3 --cosine_first_decay_epochs 13
 # Special mode: pass "lr_test" or "lr_range_test" as the first arg to run the LR sweep.
 if [ "${1:-}" = "lr_test" ] || [ "${1:-}" = "lr_range_test" ]; then
   LR_RANGE_TEST=1
@@ -66,7 +66,8 @@ COMMON=(
   --channel_gen_device gpu
   --train_channels_outside_graph 1
   --lr_schedule cosine_restarts
-  --lr 0.003
+  # --lr 0.003
+  --lr 2e-3
   --cosine_first_decay_epochs 10
   --lr_warmup_epochs 3
   --seed "${SEED}"
