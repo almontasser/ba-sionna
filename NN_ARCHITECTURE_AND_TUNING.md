@@ -99,3 +99,27 @@ For time-varying channels:
 - If learning is unstable:
   - try a smaller SNR range during early training (curriculum),
   - reduce `UE_SPEED_RANGE` or reduce the per-step time increment by increasing `MOBILITY_SAMPLING_FREQUENCY_HZ`.
+
+## Learning-rate tuning (LR range test)
+
+This repo supports a short **LR range test** to pick a stable LR band before full training.
+
+Run (example):
+
+```bash
+python train.py --lr_range_test --lr_range_min_lr 1e-5 --lr_range_max_lr 1e-2 --lr_range_steps 2000
+```
+
+Or via the shell helper:
+
+```bash
+LR_RANGE_TEST=1 bash train.sh
+```
+
+The sweep logs to TensorBoard under:
+
+- `lr_range_test/learning_rate`
+- `lr_range_test/loss`
+- `lr_range_test/smoothed_loss`
+
+Pick an initial LR below the divergence point; then train with `--lr_schedule cosine_restarts`.

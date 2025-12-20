@@ -439,6 +439,151 @@ def _mix_scenario_datasets(
     return tf.data.Dataset.sample_from_datasets(ds_list, weights=weights, seed=int(seed))
 
 
+def _run_lr_range_test(
+    model,
+    config,
+    *,
+    summary_writer,
+    scenario_weights: dict[str, float],
+    lr_min: float,
+    lr_max: float,
+    lr_steps: int,
+    stop_factor: float,
+    seed: int,
+) -> None:
+    """
+    Run a short LR range test (exponential LR increase) and log loss vs LR.
+    """
+    lr_min = float(lr_min)
+    lr_max = float(lr_max)
+    lr_steps = int(lr_steps)
+    stop_factor = float(stop_factor)
+
+    if lr_min <= 0.0 or lr_max <= 0.0:
+        raise ValueError("--lr_range_min_lr/--lr_range_max_lr must be > 0.")
+    if lr_max <= lr_min:
+        raise ValueError("--lr_range_max_lr must be greater than --lr_range_min_lr.")
+    if lr_steps < 10:
+        raise ValueError("--lr_range_steps must be >= 10.")
+
+    print("\n" + "=" * 80)
+    print("LEARNING-RATE RANGE TEST")
+    print("=" * 80)
+    print(f"LR range: {lr_min:g} -> {lr_max:g} over {lr_steps} steps")
+    print(f"Early stop factor: {stop_factor:g}x")
+
+    # Build per-scenario dataset (one scenario per batch) if needed.
+    num_time_samples = 1
+    sampling_frequency = 1.0
+    if getattr(config, "MOBILITY_ENABLE", False):
+        nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
+        num_time_samples = int(nts) if nts is not None else int(config.T + 1)
+        sampling_frequency = float(getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+
+    use_scenario_ds = len(getattr(config, "SCENARIOS", [])) > 1
+    train_scenario_iter = None
+    if use_scenario_ds:
+        train_scenario_ds, active = _build_per_scenario_batch_dataset(
+            config,
+            batch_size=int(config.BATCH_SIZE),
+            num_time_samples=int(num_time_samples),
+            sampling_frequency=float(sampling_frequency),
+            scenario_weights=scenario_weights,
+        )
+        train_scenario_iter = iter(train_scenario_ds)
+        print("\nLR range test scenarios (per-batch sampling):")
+        for s in active:
+            print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
+
+    # Optimizer with manually controlled LR.
+    lr_var = tf.Variable(lr_min, trainable=False, dtype=tf.float32)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_var)
+
+    # Exponential LR sweep.
+    lr_ratio = lr_max / lr_min
+    lr_mult = lr_ratio ** (1.0 / float(lr_steps - 1))
+
+    beta = 0.98
+    avg_loss = 0.0
+    best_loss = float("inf")
+    best_lr = lr_min
+
+    pbar = tqdm(range(lr_steps), desc="LR range test")
+    for step in pbar:
+        lr_now = lr_min * (lr_mult ** step)
+        lr_var.assign(lr_now)
+
+        if use_scenario_ds:
+            if train_scenario_iter is None:
+                raise RuntimeError("Per-scenario LR test requested but no dataset iterator is available.")
+            channels, _scenario_id = next(train_scenario_iter)
+        elif getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
+            channels, _, _ = model.generate_channels(int(config.BATCH_SIZE))
+        else:
+            channels = None
+
+        snr_db = sample_snr(config)
+        loss, bf_gain_db, grad_norm, update_skipped = train_step(
+            model,
+            optimizer,
+            config.BATCH_SIZE,
+            snr_db,
+            channels=channels,
+        )
+
+        loss_val = float(loss.numpy())
+        grad_norm_val = float(grad_norm.numpy())
+        bf_gain_val = float(bf_gain_db.numpy())
+        skipped_val = int(update_skipped.numpy())
+
+        if not np.isfinite(loss_val) or skipped_val:
+            print(
+                f"\nStopped LR range test at step {step} due to non-finite loss "
+                f"(skipped={skipped_val})."
+            )
+            break
+
+        avg_loss = beta * avg_loss + (1.0 - beta) * loss_val
+        smooth_loss = avg_loss / (1.0 - beta ** (step + 1))
+
+        if smooth_loss < best_loss:
+            best_loss = smooth_loss
+            best_lr = float(lr_now)
+
+        if step > 10 and smooth_loss > stop_factor * best_loss:
+            print(
+                f"\nStopped LR range test at step {step}: loss exploded "
+                f"({smooth_loss:.4f} > {stop_factor:g}x best {best_loss:.4f})."
+            )
+            break
+
+        pbar.set_postfix(
+            {
+                "lr": f"{lr_now:.2e}",
+                "loss": f"{loss_val:.4f}",
+                "smooth": f"{smooth_loss:.4f}",
+                "bf_gain": f"{bf_gain_val:.2f} dB",
+            }
+        )
+
+        with summary_writer.as_default():
+            tf.summary.scalar("lr_range_test/loss", loss, step=step)
+            tf.summary.scalar("lr_range_test/smoothed_loss", smooth_loss, step=step)
+            tf.summary.scalar("lr_range_test/learning_rate", lr_var, step=step)
+            tf.summary.scalar("lr_range_test/bf_gain_db", bf_gain_db, step=step)
+            tf.summary.scalar("lr_range_test/gradient_norm", grad_norm, step=step)
+            tf.summary.scalar(
+                "lr_range_test/update_skipped", tf.cast(update_skipped, tf.float32), step=step
+            )
+
+    print("\nLR range test complete.")
+    print(f"Best smoothed loss: {best_loss:.4f} at lr={best_lr:.3g}")
+    print(
+        "Suggested initial LR: choose a value below the divergence point, "
+        "often around the best-loss LR."
+    )
+
+
 def train(
     config,
     checkpoint_dir=None,
@@ -448,6 +593,11 @@ def train(
     resume: bool = True,
     reset_optimizer: bool = False,
     scenario_curriculum_phases: list[tuple[int, dict[str, float]]] | None = None,
+    lr_range_test: bool = False,
+    lr_range_min_lr: float = 1e-5,
+    lr_range_max_lr: float = 1e-2,
+    lr_range_steps: int = 2000,
+    lr_range_stop_factor: float = 4.0,
 ):
     """
     Main training loop.
@@ -557,6 +707,21 @@ def train(
         # for large batch sizes and time-varying channels).
         print("Building model (no channel generation)...")
         model.build(None)
+
+        # Optional: LR range test (then exit).
+        if lr_range_test:
+            _run_lr_range_test(
+                model,
+                config,
+                summary_writer=summary_writer,
+                scenario_weights=scenario_weights,
+                lr_min=lr_range_min_lr,
+                lr_max=lr_range_max_lr,
+                lr_steps=lr_range_steps,
+                stop_factor=lr_range_stop_factor,
+                seed=seed,
+            )
+            return
 
         # Create optimizer with learning-rate schedule
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
@@ -1147,6 +1312,35 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=None, help='Batch size')
     parser.add_argument('--lr', type=float, default=None, help='Learning rate')
     parser.add_argument(
+        '--lr_range_test',
+        action='store_true',
+        help='Run a short LR range test (exponential LR sweep) and exit.',
+    )
+    parser.add_argument(
+        '--lr_range_min_lr',
+        type=float,
+        default=1e-5,
+        help='LR range test: minimum LR (default: 1e-5)',
+    )
+    parser.add_argument(
+        '--lr_range_max_lr',
+        type=float,
+        default=1e-2,
+        help='LR range test: maximum LR (default: 1e-2)',
+    )
+    parser.add_argument(
+        '--lr_range_steps',
+        type=int,
+        default=2000,
+        help='LR range test: number of steps (default: 2000)',
+    )
+    parser.add_argument(
+        '--lr_range_stop_factor',
+        type=float,
+        default=4.0,
+        help='LR range test: early-stop factor on smoothed loss (default: 4.0)',
+    )
+    parser.add_argument(
         '--lr_schedule',
         type=str,
         default=None,
@@ -1381,4 +1575,9 @@ if __name__ == "__main__":
         resume=bool(int(args.resume)),
         reset_optimizer=bool(int(args.reset_optimizer)),
         scenario_curriculum_phases=scenario_curriculum_phases,
+        lr_range_test=bool(args.lr_range_test),
+        lr_range_min_lr=float(args.lr_range_min_lr),
+        lr_range_max_lr=float(args.lr_range_max_lr),
+        lr_range_steps=int(args.lr_range_steps),
+        lr_range_stop_factor=float(args.lr_range_stop_factor),
     )
