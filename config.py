@@ -72,7 +72,7 @@ class Config:
 
     # Domain Randomization Parameters (for robust training)
     # Scenarios: Urban Micro (UMi), Urban Macro (UMa), Rural Macro (RMa)
-    SCENARIOS = ["UMi", "UMa", "RMa"]
+    SCENARIOS = ["UMi"]
     # O2I model for UMi/UMa (required by Sionna, even if indoor_probability=0)
     O2I_MODEL = "low"  # {"low","high"}
     # If enabled, SNR_RX depends on distance/pathloss; keep disabled for paper-style normalization.
@@ -146,17 +146,14 @@ class Config:
     EPOCHS = 100
     LEARNING_RATE = 0.001
     # Learning-rate schedule:
-    # - "warmup_then_decay": linear warm-up (optional) + exponential decay (default)
+    # - "exp_decay": exponential decay
     # - "cosine_restarts": cosine annealing with warm restarts
-    # - "constant": constant LR (optionally with warm-up), useful for quick LR sweeps
-    LR_SCHEDULE = (
-        "warmup_then_decay"  # {"warmup_then_decay","cosine_restarts","constant"}
-    )
+    # - "constant": constant LR (useful for LR sweeps)
+    LR_SCHEDULE = "exp_decay"  # {"exp_decay","cosine_restarts","constant"}
     # Global LR multiplier applied on top of the chosen schedule (useful for ablations).
     LR_SCALE = 1.0
     LEARNING_RATE_DECAY = 0.96
     LEARNING_RATE_DECAY_STEPS = 10  # Decay every 10 epochs
-    LR_WARMUP_EPOCHS = 0  # Linear warm-up epochs (0 disables warm-up)
 
     # Cosine warm restarts (used when LR_SCHEDULE=="cosine_restarts")
     # Note: first decay period is expressed in epochs and converted to steps in train.py.
@@ -283,9 +280,8 @@ class Config:
         print(f"  Batch Size: {cls.BATCH_SIZE}")
         print(f"  Epochs: {cls.EPOCHS}")
         print(f"  Learning Rate: {cls.LEARNING_RATE}")
-        print(f"  LR schedule: {getattr(cls, 'LR_SCHEDULE', 'warmup_then_decay')}")
+        print(f"  LR schedule: {getattr(cls, 'LR_SCHEDULE', 'exp_decay')}")
         print(f"  LR scale: {getattr(cls, 'LR_SCALE', 1.0)}")
-        print(f"  LR warmup epochs: {getattr(cls, 'LR_WARMUP_EPOCHS', 0)}")
         print(f"  Random seed: {getattr(cls, 'RANDOM_SEED', None)}")
         if cls.SNR_TRAIN_RANDOMIZE:
             print(

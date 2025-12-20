@@ -6,7 +6,7 @@ from figures_evaluators.common import evaluate_at_snr, load_c3_model
 
 
 def generate_figure_4_scenario_comparison(
-    config, output_dir="./results", num_samples=2000
+    config, output_dir="./results", num_samples=2000, *, checkpoint_dir_template=None
 ):
     """
     Figure 4 (same axes as paper): BF gain and satisfaction probability vs SNR.
@@ -28,7 +28,7 @@ def generate_figure_4_scenario_comparison(
     # Compare each scenario variant separately at evaluation time
     scenario_variants = list(getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"]))
 
-    checkpoint_dir = f"./checkpoints_C3_T{config.T}"
+    default_ckpt_dir = f"./checkpoints_C3_T{config.T}"
 
     results = {
         scenario: {"bf_gain": [], "sat_prob": []} for scenario in scenario_variants
@@ -37,7 +37,13 @@ def generate_figure_4_scenario_comparison(
     # Evaluate one model per scenario variant (same weights, different channel condition)
     for scenario in scenario_variants:
         print(f"\nLoading C3 model for evaluation on {scenario}...")
-        model = load_c3_model(config, checkpoint_dir, scenarios=[scenario])
+        if checkpoint_dir_template:
+            ckpt_dir = checkpoint_dir_template.format(T=int(config.T), scenario=scenario)
+        else:
+            ckpt_dir = f"./checkpoints_C3_T{config.T}_{scenario}"
+            if not os.path.isdir(ckpt_dir):
+                ckpt_dir = default_ckpt_dir
+        model = load_c3_model(config, ckpt_dir, scenarios=[scenario])
 
         print(f"Evaluating {scenario}...")
         for snr_db in tqdm(snr_range, desc=f"{scenario}"):

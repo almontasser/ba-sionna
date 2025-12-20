@@ -6,7 +6,9 @@ import os
 from figures_evaluators.common import evaluate_at_snr, load_c3_model
 
 
-def generate_figure_5_scenario_comparison(config, output_dir="./results", num_samples=1000):
+def generate_figure_5_scenario_comparison(
+    config, output_dir="./results", num_samples=1000, *, checkpoint_dir_template=None
+):
     """
     Figure 5 (same axes as paper): performance vs number of sensing steps T.
 
@@ -31,7 +33,12 @@ def generate_figure_5_scenario_comparison(config, output_dir="./results", num_sa
     for s in scenario_variants:
         print(f"\nEvaluating {s} across T...")
         for T in tqdm(T_values, desc=f"{s}"):
-            ckpt_dir = f"./checkpoints_C3_T{int(T)}"
+            if checkpoint_dir_template:
+                ckpt_dir = checkpoint_dir_template.format(T=int(T), scenario=s)
+            else:
+                ckpt_dir = f"./checkpoints_C3_T{int(T)}_{s}"
+                if not os.path.isdir(ckpt_dir):
+                    ckpt_dir = f"./checkpoints_C3_T{int(T)}"
             model = load_c3_model(
                 config,
                 ckpt_dir,

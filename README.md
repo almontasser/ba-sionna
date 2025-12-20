@@ -102,14 +102,16 @@ python train.py --test_mode
 
 See `QUICKSTART.md` and `VALIDATION_GUIDE.md` for recommended validation steps.
 
-Train one robust multi-scenario model with 2 warmup stages + balanced main stage (default):
+Train a single-scenario model (default: UMi):
 ```bash
 bash train.sh
 ```
 
-Disable curriculum (pure balanced sampling for all epochs):
+Change the training scenario (UMa or RMa):
 ```bash
-SCENARIO_CURRICULUM=0 RUN_NAME=final_balanced bash train.sh
+bash train.sh UMa
+# or
+SCENARIO=RMa bash train.sh
 ```
 
 Avoid accidental carry-over between runs:
@@ -118,7 +120,7 @@ Avoid accidental carry-over between runs:
 
 Pass extra args through to `train.py`:
 ```bash
-bash train.sh --lr_schedule cosine_restarts --lr 0.003 --cosine_first_decay_epochs 13
+bash train.sh --lr 0.002
 ```
 
 ### Monitoring Training
@@ -146,6 +148,13 @@ python evaluate.py --figure 4 --num_samples 2000
 
 # Figure 5: scenario comparison vs T
 python evaluate.py --figure 5 --num_samples 1000
+```
+
+Evaluate specific scenarios or scenario-specific checkpoints:
+
+```bash
+python evaluate.py --figure 4 --scenarios "UMi,UMa,RMa" \
+  --checkpoint_dir_template "./checkpoints_C3_T{T}_{scenario}"
 ```
 
 ## Configuration

@@ -27,6 +27,21 @@ def main():
     parser.add_argument(
         "--num_samples", type=int, default=2000, help="Number of samples for evaluation"
     )
+    parser.add_argument(
+        "--scenarios",
+        type=str,
+        default=None,
+        help='Comma-separated scenarios to evaluate (e.g., "UMi,UMa,RMa"). Default: Config.SCENARIOS.',
+    )
+    parser.add_argument(
+        "--checkpoint_dir_template",
+        type=str,
+        default=None,
+        help=(
+            "Checkpoint directory template with {T} and {scenario}, "
+            'e.g. "./checkpoints_C3_T{T}_{scenario}".'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -46,12 +61,25 @@ def main():
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
+    if args.scenarios is not None:
+        Config.SCENARIOS = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+
     # Generate figures
     if args.figure in ["all", "4"]:
-        generate_figure_4_scenario_comparison(Config, args.output_dir, args.num_samples)
+        generate_figure_4_scenario_comparison(
+            Config,
+            args.output_dir,
+            args.num_samples,
+            checkpoint_dir_template=args.checkpoint_dir_template,
+        )
 
     if args.figure in ["all", "5"]:
-        generate_figure_5_scenario_comparison(Config, args.output_dir, args.num_samples)
+        generate_figure_5_scenario_comparison(
+            Config,
+            args.output_dir,
+            args.num_samples,
+            checkpoint_dir_template=args.checkpoint_dir_template,
+        )
 
     print("\n" + "=" * 80)
     print("FIGURE REPRODUCTION COMPLETE")

@@ -18,13 +18,13 @@ is ~0.7M parameters (and can be reduced/increased via Config).
 Usage:
     Basic training:
         $ python train.py
-    
+
     Custom configuration:
         $ python train.py --epochs 200 --batch_size 512 --lr 0.0005
-    
+
     Resume from checkpoint:
         $ python train.py --checkpoint_dir ./checkpoints/experiment_1
-    
+
     Test mode (reduced dataset):
         $ python train.py --test_mode
 
@@ -62,17 +62,17 @@ from channel_model import SionnaScenarioChannelModel
 from config import Config
 from models.beam_alignment import BeamAlignmentModel
 from checkpoint_utils import check_checkpoint_compatibility
-from training.lr_schedule import ConstantLearningRate, ScaledSchedule, WarmupThenDecay, WarmupThenSchedule
+from training.lr_schedule import ConstantLearningRate, ScaledSchedule
 from training.steps import sample_snr, train_step, validate
 
 
 def create_model(config):
     """
     Create and initialize a BeamAlignmentModel from configuration.
-    
+
     This function instantiates the complete end-to-end beam alignment system,
     including the BS controller, UE controller, and channel model components.
-    
+
     Args:
         config: Configuration object (Config class) containing:
             - NTX: Number of BS transmit antennas
@@ -84,7 +84,7 @@ def create_model(config):
             - NUM_FEEDBACK: Number of feedback values from UE to BS
     Returns:
         BeamAlignmentModel: Initialized beam alignment model ready for training
-    
+
     Example:
         >>> from config import Config
         >>> model = create_model(Config)
@@ -186,7 +186,9 @@ def _normalize_scenario_weights(
     scenarios = [_canonical_scenario_name(s) for s in scenarios]
     has_flag_weights = any(x is not None for x in (w_umi, w_uma, w_rma))
     if spec is not None and has_flag_weights:
-        raise ValueError("Use either --scenario_weights or --w_umi/--w_uma/--w_rma, not both.")
+        raise ValueError(
+            "Use either --scenario_weights or --w_umi/--w_uma/--w_rma, not both."
+        )
 
     explicit = (spec is not None) or has_flag_weights
     raw: dict[str, float] = {}
@@ -234,7 +236,9 @@ def _parse_curriculum_epochs(spec: str) -> list[int]:
             raise ValueError(f"Curriculum epoch counts must be positive, got {val}.")
         epochs.append(val)
     if not epochs:
-        raise ValueError("--curriculum_epochs must contain at least one positive integer.")
+        raise ValueError(
+            "--curriculum_epochs must contain at least one positive integer."
+        )
     return epochs
 
 
@@ -391,7 +395,10 @@ def _build_per_scenario_datasets(
     Build per-scenario infinite datasets, each yielding (channels, scenario_id) batches.
     """
     # Preserve the user's scenario order.
-    scenarios = [_canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])]
+    scenarios = [
+        _canonical_scenario_name(s)
+        for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
+    ]
     scenarios = list(scenarios)
     gen_device = _resolve_channel_device(config)
 
@@ -436,7 +443,9 @@ def _mix_scenario_datasets(
         raise ValueError("Scenario weights must have at least one value > 0.")
     total = float(sum(weights))
     weights = [w / total for w in weights]
-    return tf.data.Dataset.sample_from_datasets(ds_list, weights=weights, seed=int(seed))
+    return tf.data.Dataset.sample_from_datasets(
+        ds_list, weights=weights, seed=int(seed)
+    )
 
 
 def _run_lr_range_test(
@@ -478,7 +487,9 @@ def _run_lr_range_test(
     if getattr(config, "MOBILITY_ENABLE", False):
         nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
         num_time_samples = int(nts) if nts is not None else int(config.T + 1)
-        sampling_frequency = float(getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+        sampling_frequency = float(
+            getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0)
+        )
 
     use_scenario_ds = len(getattr(config, "SCENARIOS", [])) > 1
     train_scenario_iter = None
@@ -509,7 +520,7 @@ def _run_lr_range_test(
 
     pbar = tqdm(range(lr_steps), desc="LR range test")
     for step in pbar:
-        lr_now = lr_min * (lr_mult ** step)
+        lr_now = lr_min * (lr_mult**step)
         try:
             optimizer.learning_rate.assign(lr_now)
         except Exception:
@@ -517,7 +528,9 @@ def _run_lr_range_test(
 
         if use_scenario_ds:
             if train_scenario_iter is None:
-                raise RuntimeError("Per-scenario LR test requested but no dataset iterator is available.")
+                raise RuntimeError(
+                    "Per-scenario LR test requested but no dataset iterator is available."
+                )
             channels, _scenario_id = next(train_scenario_iter)
         elif getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
             channels, _, _ = model.generate_channels(int(config.BATCH_SIZE))
@@ -583,7 +596,9 @@ def _run_lr_range_test(
             tf.summary.scalar("lr_range_test/bf_gain_db", bf_gain_db, step=step)
             tf.summary.scalar("lr_range_test/gradient_norm", grad_norm, step=step)
             tf.summary.scalar(
-                "lr_range_test/update_skipped", tf.cast(update_skipped, tf.float32), step=step
+                "lr_range_test/update_skipped",
+                tf.cast(update_skipped, tf.float32),
+                step=step,
             )
 
     print("\nLR range test complete.")
@@ -611,7 +626,7 @@ def train(
 ):
     """
     Main training loop.
-    
+
     Args:
         config: Configuration object
         checkpoint_dir: Directory to save checkpoints
@@ -621,19 +636,20 @@ def train(
     print("=" * 80)
     print("BEAM ALIGNMENT TRAINING")
     print("=" * 80)
-    
+
     # Setup device
     print("\nDevice Setup:")
     print_device_info()
     device_string, device_name = setup_device(verbose=False)
-    
+
     # Enable mixed precision training for better GPU performance (~2x speedup on modern GPUs)
-    if 'GPU' in device_string:
+    if "GPU" in device_string:
         from tensorflow.keras import mixed_precision
-        policy = mixed_precision.Policy('mixed_float16')
+
+        policy = mixed_precision.Policy("mixed_float16")
         mixed_precision.set_global_policy(policy)
         print("✅ Mixed precision training enabled (float16) for faster GPU training\n")
-    
+
     # Print configuration
     print("\n")
     config.print_config()
@@ -643,16 +659,16 @@ def train(
     tf.random.set_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    
+
     # Create directories
     if checkpoint_dir is None:
         checkpoint_dir = f"{config.CHECKPOINT_DIR}_C3_T{config.T}"
     if log_dir is None:
         log_dir = config.LOG_DIR
-    
+
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
-    
+
     # TensorBoard writer
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_tag = f"{str(run_name).strip()}_{timestamp}" if run_name else f"run_{timestamp}"
@@ -700,14 +716,18 @@ def train(
             print(f"  {s}: {scenario_weights[s]:.6f}")
 
     with summary_writer.as_default():
-        tf.summary.text("run/scenario_weights", tf.constant(str(scenario_weights)), step=0)
+        tf.summary.text(
+            "run/scenario_weights", tf.constant(str(scenario_weights)), step=0
+        )
         for s in ["UMi", "UMa", "RMa"]:
             if s in scenario_weights:
-                tf.summary.scalar(f"run/scenario_weight_{s}", scenario_weights[s], step=0)
+                tf.summary.scalar(
+                    f"run/scenario_weight_{s}", scenario_weights[s], step=0
+                )
 
     print(f"\nTensorBoard run: {run_dir}")
     print(f"Checkpoints: {checkpoint_dir}")
-    
+
     with tf.device(device_string):
         # Create model
         print(f"\nCreating model on {device_name}...")
@@ -737,20 +757,21 @@ def train(
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
         base_lr = float(config.LEARNING_RATE)
         lr_scale = float(getattr(config, "LR_SCALE", 1.0))
-        warmup_epochs = int(getattr(config, "LR_WARMUP_EPOCHS", 0) or 0)
-        warmup_steps = int(warmup_epochs * steps_per_epoch)
-
-        lr_schedule_name = str(getattr(config, "LR_SCHEDULE", "warmup_then_decay")).lower()
-        if lr_schedule_name in {"warmup_then_decay", "warmup_decay", "exp_decay"}:
-            decay_steps = max(1, int(config.LEARNING_RATE_DECAY_STEPS * steps_per_epoch))
-            base_schedule = WarmupThenDecay(
-                base_lr=base_lr,
-                warmup_steps=warmup_steps,
+        lr_schedule_name = str(getattr(config, "LR_SCHEDULE", "exp_decay")).lower()
+        if lr_schedule_name in {"exp_decay"}:
+            decay_steps = max(
+                1, int(config.LEARNING_RATE_DECAY_STEPS * steps_per_epoch)
+            )
+            base_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+                initial_learning_rate=base_lr,
                 decay_steps=decay_steps,
                 decay_rate=config.LEARNING_RATE_DECAY,
+                staircase=True,
             )
         elif lr_schedule_name in {"cosine_restarts", "cosine_restart", "cosine"}:
-            first_decay_epochs = float(getattr(config, "LR_COSINE_FIRST_DECAY_EPOCHS", 10))
+            first_decay_epochs = float(
+                getattr(config, "LR_COSINE_FIRST_DECAY_EPOCHS", 10)
+            )
             first_decay_steps = max(1, int(first_decay_epochs * steps_per_epoch))
             cosine = tf.keras.optimizers.schedules.CosineDecayRestarts(
                 initial_learning_rate=base_lr,
@@ -759,14 +780,14 @@ def train(
                 m_mul=float(getattr(config, "LR_COSINE_M_MUL", 1.0)),
                 alpha=float(getattr(config, "LR_COSINE_ALPHA", 0.0)),
             )
-            base_schedule = WarmupThenSchedule(base_lr=base_lr, warmup_steps=warmup_steps, schedule=cosine)
+            base_schedule = cosine
         elif lr_schedule_name in {"constant", "const"}:
             const = ConstantLearningRate(base_lr)
-            base_schedule = WarmupThenSchedule(base_lr=base_lr, warmup_steps=warmup_steps, schedule=const)
+            base_schedule = const
         else:
             raise ValueError(
                 f"Unknown LR_SCHEDULE={lr_schedule_name!r}. "
-                "Expected one of: warmup_then_decay, cosine_restarts, constant."
+                "Expected one of: exp_decay, cosine_restarts, constant."
             )
 
         lr_schedule = ScaledSchedule(base_schedule, initial_scale=lr_scale)
@@ -776,10 +797,10 @@ def train(
         print(f"  LR schedule: {lr_schedule_name}")
         print(f"  Base LR: {base_lr:g}")
         print(f"  LR scale: {lr_scale:g}")
-        if warmup_steps > 0:
-            print(f"  Warmup: {warmup_epochs} epochs ({warmup_steps} steps)")
         if lr_schedule_name in {"cosine_restarts", "cosine_restart", "cosine"}:
-            print(f"  Cosine first period: {first_decay_steps} steps (~{first_decay_epochs:g} epochs)")
+            print(
+                f"  Cosine first period: {first_decay_steps} steps (~{first_decay_epochs:g} epochs)"
+            )
 
         # Setup checkpoint manager.
         epoch_var = tf.Variable(0, trainable=False, dtype=tf.int64, name="epoch")
@@ -789,7 +810,9 @@ def train(
             epoch=epoch_var,
             lr_scale=lr_schedule.scale,
         )
-        checkpoint_manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=5)
+        checkpoint_manager = tf.train.CheckpointManager(
+            checkpoint, checkpoint_dir, max_to_keep=5
+        )
 
         def _set_save_counter_from_path(ckpt_path: str) -> None:
             """Avoid clobbering existing ckpt-N when restoring model-only."""
@@ -921,17 +944,17 @@ def train(
                 "Nothing to do."
             )
             return
-        
+
         # Training loop
         print("\n" + "=" * 80)
         print("STARTING TRAINING")
         print("=" * 80)
-        
+
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
         val_batches = max(1, config.NUM_VAL_SAMPLES // config.BATCH_SIZE)
-        
+
         global_step = start_epoch * steps_per_epoch
-        best_val_bf_gain = -float('inf')
+        best_val_bf_gain = -float("inf")
         num_backoffs = 0
         skipped_steps_in_row = 0
 
@@ -941,7 +964,9 @@ def train(
         if getattr(config, "MOBILITY_ENABLE", False):
             nts = getattr(config, "MOBILITY_NUM_TIME_SAMPLES", None)
             num_time_samples = int(nts) if nts is not None else int(config.T + 1)
-            sampling_frequency = float(getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0))
+            sampling_frequency = float(
+                getattr(config, "MOBILITY_SAMPLING_FREQUENCY_HZ", 1.0)
+            )
 
         use_scenario_ds = len(getattr(config, "SCENARIOS", [])) > 1
 
@@ -957,7 +982,8 @@ def train(
                 cur = end
 
         train_scenarios = [
-            _canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
+            _canonical_scenario_name(s)
+            for s in getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"])
         ]
 
         # Per-scenario tf.data pipeline: one scenario per batch, sampled by weights.
@@ -966,11 +992,13 @@ def train(
         per_scenario_scenarios = None
         current_curriculum_phase = None
         if use_scenario_ds:
-            per_scenario_datasets, per_scenario_scenarios = _build_per_scenario_datasets(
-                config,
-                batch_size=int(config.BATCH_SIZE),
-                num_time_samples=int(num_time_samples),
-                sampling_frequency=float(sampling_frequency),
+            per_scenario_datasets, per_scenario_scenarios = (
+                _build_per_scenario_datasets(
+                    config,
+                    batch_size=int(config.BATCH_SIZE),
+                    num_time_samples=int(num_time_samples),
+                    sampling_frequency=float(sampling_frequency),
+                )
             )
             train_scenarios = list(per_scenario_scenarios)
             if curriculum_bounds is None:
@@ -986,7 +1014,9 @@ def train(
                     for s in per_scenario_scenarios
                     if float(scenario_weights.get(s, 0.0)) > 0.0
                 ]
-                print("\nTraining data: per-scenario batches via tf.data.sample_from_datasets")
+                print(
+                    "\nTraining data: per-scenario batches via tf.data.sample_from_datasets"
+                )
                 for s in active:
                     print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
             else:
@@ -1016,7 +1046,7 @@ def train(
                 )
             except Exception:
                 print(f"WARNING: LR backoff ({reason}).")
-        
+
         for epoch in range(start_epoch, config.EPOCHS):
             print(f"\nEpoch {epoch + 1}/{config.EPOCHS}")
             print("-" * 80)
@@ -1088,7 +1118,7 @@ def train(
                 print(f"LR @ step {iter_now}: {lr_now:.6g}")
             except Exception:
                 pass
-            
+
             # Training
             epoch_loss = 0.0
             epoch_bf_gain = 0.0
@@ -1123,34 +1153,48 @@ def train(
 
                     if skipped_val:
                         skipped_steps_in_row += 1
-                        max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
+                        max_skips = int(
+                            getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20)
+                        )
                         if skipped_steps_in_row >= max_skips:
-                            _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
+                            _backoff_lr(
+                                f"{skipped_steps_in_row} non-finite steps in a row"
+                            )
                     else:
                         skipped_steps_in_row = 0
 
                     gain_norm = -loss
                     gain_norm_val = -loss_val
                     pbar_dict = {
-                        'loss': f'{loss_val:.4f}',
-                        'gain_norm': f'{gain_norm_val:.4f}',
-                        'BF_gain': f'{bf_gain_val:.2f} dB',
-                        'grad_norm': f'{grad_norm_val:.3f}',
-                        'skipped': str(skipped_val),
+                        "loss": f"{loss_val:.4f}",
+                        "gain_norm": f"{gain_norm_val:.4f}",
+                        "BF_gain": f"{bf_gain_val:.2f} dB",
+                        "grad_norm": f"{grad_norm_val:.3f}",
+                        "skipped": str(skipped_val),
                     }
                     pbar.set_postfix(pbar_dict)
 
                     if step % 10 == 0:
                         with summary_writer.as_default():
                             tf.summary.scalar("train/loss", loss, step=global_step)
-                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
                             tf.summary.scalar(
-                                "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
+                                "train/gain_norm", gain_norm, step=global_step
                             )
                             tf.summary.scalar(
-                                "train/learning_rate", _current_learning_rate(optimizer), step=global_step
+                                "train/bf_gain_db", bf_gain_db, step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/gradient_norm", grad_norm, step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/update_skipped",
+                                tf.cast(update_skipped, tf.float32),
+                                step=global_step,
+                            )
+                            tf.summary.scalar(
+                                "train/learning_rate",
+                                _current_learning_rate(optimizer),
+                                step=global_step,
                             )
             elif getattr(config, "TRAIN_CHANNELS_OUTSIDE_GRAPH", False):
                 # Legacy per-batch training: generate channels in Python (mixed scenarios within batch).
@@ -1178,34 +1222,48 @@ def train(
 
                     if skipped_val:
                         skipped_steps_in_row += 1
-                        max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
+                        max_skips = int(
+                            getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20)
+                        )
                         if skipped_steps_in_row >= max_skips:
-                            _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
+                            _backoff_lr(
+                                f"{skipped_steps_in_row} non-finite steps in a row"
+                            )
                     else:
                         skipped_steps_in_row = 0
 
                     gain_norm = -loss
                     gain_norm_val = -loss_val
                     pbar_dict = {
-                        'loss': f'{loss_val:.4f}',
-                        'gain_norm': f'{gain_norm_val:.4f}',
-                        'BF_gain': f'{bf_gain_val:.2f} dB',
-                        'grad_norm': f'{grad_norm_val:.3f}',
-                        'skipped': str(skipped_val),
+                        "loss": f"{loss_val:.4f}",
+                        "gain_norm": f"{gain_norm_val:.4f}",
+                        "BF_gain": f"{bf_gain_val:.2f} dB",
+                        "grad_norm": f"{grad_norm_val:.3f}",
+                        "skipped": str(skipped_val),
                     }
                     pbar.set_postfix(pbar_dict)
 
                     if step % 10 == 0:
                         with summary_writer.as_default():
                             tf.summary.scalar("train/loss", loss, step=global_step)
-                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
                             tf.summary.scalar(
-                                "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
+                                "train/gain_norm", gain_norm, step=global_step
                             )
                             tf.summary.scalar(
-                                "train/learning_rate", _current_learning_rate(optimizer), step=global_step
+                                "train/bf_gain_db", bf_gain_db, step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/gradient_norm", grad_norm, step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/update_skipped",
+                                tf.cast(update_skipped, tf.float32),
+                                step=global_step,
+                            )
+                            tf.summary.scalar(
+                                "train/learning_rate",
+                                _current_learning_rate(optimizer),
+                                step=global_step,
                             )
             else:
                 # Fallback: generate channels inside the training step (legacy graph mode).
@@ -1231,42 +1289,56 @@ def train(
 
                     if skipped_val:
                         skipped_steps_in_row += 1
-                        max_skips = int(getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20))
+                        max_skips = int(
+                            getattr(config, "DIVERGENCE_MAX_SKIPPED_STEPS", 20)
+                        )
                         if skipped_steps_in_row >= max_skips:
-                            _backoff_lr(f"{skipped_steps_in_row} non-finite steps in a row")
+                            _backoff_lr(
+                                f"{skipped_steps_in_row} non-finite steps in a row"
+                            )
                     else:
                         skipped_steps_in_row = 0
 
                     gain_norm = -loss
                     gain_norm_val = -loss_val
                     pbar_dict = {
-                        'loss': f'{loss_val:.4f}',
-                        'gain_norm': f'{gain_norm_val:.4f}',
-                        'BF_gain': f'{bf_gain_val:.2f} dB',
-                        'grad_norm': f'{grad_norm_val:.3f}',
-                        'skipped': str(skipped_val),
+                        "loss": f"{loss_val:.4f}",
+                        "gain_norm": f"{gain_norm_val:.4f}",
+                        "BF_gain": f"{bf_gain_val:.2f} dB",
+                        "grad_norm": f"{grad_norm_val:.3f}",
+                        "skipped": str(skipped_val),
                     }
                     pbar.set_postfix(pbar_dict)
 
                     if step % 10 == 0:
                         with summary_writer.as_default():
                             tf.summary.scalar("train/loss", loss, step=global_step)
-                            tf.summary.scalar("train/gain_norm", gain_norm, step=global_step)
-                            tf.summary.scalar("train/bf_gain_db", bf_gain_db, step=global_step)
-                            tf.summary.scalar("train/gradient_norm", grad_norm, step=global_step)
                             tf.summary.scalar(
-                                "train/update_skipped", tf.cast(update_skipped, tf.float32), step=global_step
+                                "train/gain_norm", gain_norm, step=global_step
                             )
                             tf.summary.scalar(
-                                "train/learning_rate", _current_learning_rate(optimizer), step=global_step
+                                "train/bf_gain_db", bf_gain_db, step=global_step
                             )
-            
+                            tf.summary.scalar(
+                                "train/gradient_norm", grad_norm, step=global_step
+                            )
+                            tf.summary.scalar(
+                                "train/update_skipped",
+                                tf.cast(update_skipped, tf.float32),
+                                step=global_step,
+                            )
+                            tf.summary.scalar(
+                                "train/learning_rate",
+                                _current_learning_rate(optimizer),
+                                step=global_step,
+                            )
+
             # Epoch statistics
             avg_loss = epoch_loss / steps_per_epoch
             avg_bf_gain = epoch_bf_gain / steps_per_epoch
-            
+
             print(f"\nTraining - Loss: {avg_loss:.4f}, BF Gain: {avg_bf_gain:.2f} dB")
-            
+
             # Validation (fresh channels each epoch; no fixed caching).
             print("Validating...")
             val_metrics = validate(
@@ -1281,30 +1353,36 @@ def train(
             print(
                 f"             BF Gain: {val_metrics['mean_bf_gain_db']:.2f} ± {val_metrics['std_bf_gain_db']:.2f} dB"
             )
-            print(f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}")
+            print(
+                f"             Satisfaction Prob: {val_metrics['satisfaction_prob']:.3f}"
+            )
 
             # Log to TensorBoard
             with summary_writer.as_default():
                 tf.summary.scalar("val/loss", val_metrics["val_loss"], step=global_step)
-                tf.summary.scalar("val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step)
                 tf.summary.scalar(
-                    "val/satisfaction_prob", val_metrics["satisfaction_prob"], step=global_step
+                    "val/bf_gain_db", val_metrics["mean_bf_gain_db"], step=global_step
                 )
-            
+                tf.summary.scalar(
+                    "val/satisfaction_prob",
+                    val_metrics["satisfaction_prob"],
+                    step=global_step,
+                )
+
             # Update epoch counter in the checkpoint (store "next epoch to run").
             epoch_var.assign(int(epoch) + 1)
 
             # Save checkpoint
-            if val_metrics['mean_bf_gain_db'] > best_val_bf_gain:
-                best_val_bf_gain = val_metrics['mean_bf_gain_db']
+            if val_metrics["mean_bf_gain_db"] > best_val_bf_gain:
+                best_val_bf_gain = val_metrics["mean_bf_gain_db"]
                 save_path = checkpoint_manager.save()
                 print(f"✓ New best model! Saved checkpoint: {save_path}")
-            
+
             # Save periodic checkpoint
             if (epoch + 1) % 10 == 0:
                 save_path = checkpoint_manager.save()
                 print(f"Saved periodic checkpoint: {save_path}")
-    
+
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE")
     print("=" * 80)
@@ -1316,169 +1394,200 @@ def train(
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Train beam alignment model')
-    parser.add_argument('--epochs', type=int, default=None, help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=None, help='Batch size')
-    parser.add_argument('--lr', type=float, default=None, help='Learning rate')
+
+    parser = argparse.ArgumentParser(description="Train beam alignment model")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     parser.add_argument(
-        '--lr_range_test',
-        action='store_true',
-        help='Run a short LR range test (exponential LR sweep) and exit.',
+        "--lr_range_test",
+        action="store_true",
+        help="Run a short LR range test (exponential LR sweep) and exit.",
     )
     parser.add_argument(
-        '--lr_range_min_lr',
+        "--lr_range_min_lr",
         type=float,
         default=1e-5,
-        help='LR range test: minimum LR (default: 1e-5)',
+        help="LR range test: minimum LR (default: 1e-5)",
     )
     parser.add_argument(
-        '--lr_range_max_lr',
+        "--lr_range_max_lr",
         type=float,
         default=1e-2,
-        help='LR range test: maximum LR (default: 1e-2)',
+        help="LR range test: maximum LR (default: 1e-2)",
     )
     parser.add_argument(
-        '--lr_range_steps',
+        "--lr_range_steps",
         type=int,
         default=2000,
-        help='LR range test: number of steps (default: 2000)',
+        help="LR range test: number of steps (default: 2000)",
     )
     parser.add_argument(
-        '--lr_range_stop_factor',
+        "--lr_range_stop_factor",
         type=float,
         default=4.0,
-        help='LR range test: early-stop factor on smoothed loss (default: 4.0)',
+        help="LR range test: early-stop factor on smoothed loss (default: 4.0)",
     )
     parser.add_argument(
-        '--lr_schedule',
+        "--lr_schedule",
         type=str,
         default=None,
-        choices=["warmup_then_decay", "cosine_restarts", "constant"],
-        help='Learning-rate schedule (overrides Config.LR_SCHEDULE)',
+        choices=["exp_decay", "cosine_restarts", "constant"],
+        help="Learning-rate schedule (overrides Config.LR_SCHEDULE)",
     )
     parser.add_argument(
-        '--lr_scale',
+        "--lr_scale",
         type=float,
         default=None,
-        help='Global LR multiplier (overrides Config.LR_SCALE)',
+        help="Global LR multiplier (overrides Config.LR_SCALE)",
     )
     parser.add_argument(
-        '--cosine_first_decay_epochs',
+        "--cosine_first_decay_epochs",
         type=float,
         default=None,
-        help='Cosine restarts: first decay period in epochs (overrides Config.LR_COSINE_FIRST_DECAY_EPOCHS)',
+        help="Cosine restarts: first decay period in epochs (overrides Config.LR_COSINE_FIRST_DECAY_EPOCHS)",
     )
     parser.add_argument(
-        '--cosine_t_mul',
+        "--cosine_t_mul",
         type=float,
         default=None,
-        help='Cosine restarts: cycle length multiplier t_mul (overrides Config.LR_COSINE_T_MUL)',
+        help="Cosine restarts: cycle length multiplier t_mul (overrides Config.LR_COSINE_T_MUL)",
     )
     parser.add_argument(
-        '--cosine_m_mul',
+        "--cosine_m_mul",
         type=float,
         default=None,
-        help='Cosine restarts: amplitude multiplier m_mul (overrides Config.LR_COSINE_M_MUL)',
+        help="Cosine restarts: amplitude multiplier m_mul (overrides Config.LR_COSINE_M_MUL)",
     )
     parser.add_argument(
-        '--cosine_alpha',
+        "--cosine_alpha",
         type=float,
         default=None,
-        help='Cosine restarts: minimum LR fraction alpha (overrides Config.LR_COSINE_ALPHA)',
+        help="Cosine restarts: minimum LR fraction alpha (overrides Config.LR_COSINE_ALPHA)",
     )
-    parser.add_argument('--num_sensing_steps', '-T', type=int, default=None, 
-                       help='Number of sensing steps (T). Default: Config.T (16)')
-    parser.add_argument('--checkpoint_dir', type=str, default=None, help='Checkpoint directory')
-    parser.add_argument('--log_dir', type=str, default=None, help='Log directory')
-    parser.add_argument('--run_name', type=str, default=None, help='Optional run name for logs/checkpoints')
     parser.add_argument(
-        '--resume',
+        "--num_sensing_steps",
+        "-T",
+        type=int,
+        default=None,
+        help="Number of sensing steps (T). Default: Config.T (16)",
+    )
+    parser.add_argument(
+        "--checkpoint_dir", type=str, default=None, help="Checkpoint directory"
+    )
+    parser.add_argument("--log_dir", type=str, default=None, help="Log directory")
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Optional run name for logs/checkpoints",
+    )
+    parser.add_argument(
+        "--resume",
         type=int,
         default=1,
         choices=[0, 1],
-        help='If 1, resume from latest checkpoint in --checkpoint_dir when available (default: 1).',
+        help="If 1, resume from latest checkpoint in --checkpoint_dir when available (default: 1).",
     )
     parser.add_argument(
-        '--reset_optimizer',
+        "--reset_optimizer",
         type=int,
         default=0,
         choices=[0, 1],
-        help='If 1, restore model weights but reset optimizer/LR state when resuming (default: 0).',
-    )
-    parser.add_argument('--seed', type=int, default=None, help='Random seed (overrides Config.RANDOM_SEED)')
-    parser.add_argument(
-        '--require_gpu',
-        action='store_true',
-        help='Fail fast if no GPU is visible to TensorFlow',
+        help="If 1, restore model weights but reset optimizer/LR state when resuming (default: 0).",
     )
     parser.add_argument(
-        '--channel_gen_device',
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (overrides Config.RANDOM_SEED)",
+    )
+    parser.add_argument(
+        "--require_gpu",
+        action="store_true",
+        help="Fail fast if no GPU is visible to TensorFlow",
+    )
+    parser.add_argument(
+        "--channel_gen_device",
         type=str,
         default=None,
-        choices=['auto', 'cpu', 'gpu'],
-        help='Channel generation device placement (overrides Config.CHANNEL_GENERATION_DEVICE)',
+        choices=["auto", "cpu", "gpu"],
+        help="Channel generation device placement (overrides Config.CHANNEL_GENERATION_DEVICE)",
     )
     parser.add_argument(
-        '--train_channels_outside_graph',
+        "--train_channels_outside_graph",
         type=int,
         default=None,
         choices=[0, 1],
-        help='If 1, generate channels outside @tf.function (better GPU placement); overrides Config.TRAIN_CHANNELS_OUTSIDE_GRAPH',
+        help="If 1, generate channels outside @tf.function (better GPU placement); overrides Config.TRAIN_CHANNELS_OUTSIDE_GRAPH",
     )
     parser.add_argument(
-        '--scenarios',
+        "--scenarios",
         type=str,
         default=None,
         help='Comma-separated list of scenarios to use (e.g., "UMi,UMa,RMa")',
     )
     parser.add_argument(
-        '--scenario_weights',
+        "--scenario_weights",
         type=str,
         default=None,
         help='Per-scenario batch sampling weights, e.g. "UMi=0.6,UMa=0.3,RMa=0.1".',
     )
-    parser.add_argument('--w_umi', type=float, default=None, help='Weight for UMi (batch sampling)')
-    parser.add_argument('--w_uma', type=float, default=None, help='Weight for UMa (batch sampling)')
-    parser.add_argument('--w_rma', type=float, default=None, help='Weight for RMa (batch sampling)')
     parser.add_argument(
-        '--scenario_curriculum',
-        action='store_true',
-        help='Enable an in-run scenario-weight curriculum (weights change across epochs).',
+        "--w_umi", type=float, default=None, help="Weight for UMi (batch sampling)"
     )
     parser.add_argument(
-        '--curriculum_epochs',
+        "--w_uma", type=float, default=None, help="Weight for UMa (batch sampling)"
+    )
+    parser.add_argument(
+        "--w_rma", type=float, default=None, help="Weight for RMa (batch sampling)"
+    )
+    parser.add_argument(
+        "--scenario_curriculum",
+        action="store_true",
+        help="Enable an in-run scenario-weight curriculum (weights change across epochs).",
+    )
+    parser.add_argument(
+        "--curriculum_epochs",
         type=str,
         default=None,
         help='Comma-separated phase lengths in epochs, e.g. "3,3,94". Requires --scenario_curriculum.',
     )
     parser.add_argument(
-        '--curriculum_weights',
+        "--curriculum_weights",
         type=str,
         default=None,
         help=(
-            'Semicolon-separated weight specs per phase, e.g. '
+            "Semicolon-separated weight specs per phase, e.g. "
             '"UMi=1,UMa=0,RMa=0;UMi=0.7,UMa=0.2,RMa=0.1;UMi=0.333,UMa=0.333,RMa=0.333". '
             "Requires --scenario_curriculum."
         ),
     )
-    parser.add_argument('--target_snr', type=float, default=None,
-                       help='Target SNR (dB) for satisfaction probability metrics')
-    parser.add_argument('--lr_warmup_epochs', type=int, default=0,
-                       help='Number of warm-up epochs with linear LR ramp (0 = no warm-up)')
-    parser.add_argument('--snr_train_range', type=str, default=None,
-                       help='Training SNR range "low,high" in dB (e.g., "0,10")')
     parser.add_argument(
-        '--xla_jit',
+        "--target_snr",
+        type=float,
+        default=None,
+        help="Target SNR (dB) for satisfaction probability metrics",
+    )
+    parser.add_argument(
+        "--snr_train_range",
+        type=str,
+        default=None,
+        help='Training SNR range "low,high" in dB (e.g., "0,10")',
+    )
+    parser.add_argument(
+        "--xla_jit",
         type=int,
         default=None,
         choices=[0, 1],
-        help='Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.',
+        help="Enable XLA JIT compilation (1=on, 0=off). Default: on for GPU. Disable if XLA causes errors.",
     )
-    parser.add_argument('--test_mode', action='store_true', help='Run in test mode (1 epoch)')
-    
+    parser.add_argument(
+        "--test_mode", action="store_true", help="Run in test mode (1 epoch)"
+    )
+
     args = parser.parse_args()
-    
+
     # Override config if specified
     if args.epochs is not None:
         Config.EPOCHS = args.epochs
@@ -1498,24 +1607,26 @@ if __name__ == "__main__":
         Config.LR_COSINE_M_MUL = float(args.cosine_m_mul)
     if args.cosine_alpha is not None:
         Config.LR_COSINE_ALPHA = float(args.cosine_alpha)
-    if args.lr_warmup_epochs is not None:
-        Config.LR_WARMUP_EPOCHS = args.lr_warmup_epochs
     if args.num_sensing_steps is not None:
         Config.T = args.num_sensing_steps
     if args.scenarios is not None:
-        Config.SCENARIOS = [s.strip() for s in args.scenarios.split(',') if s.strip()]
+        Config.SCENARIOS = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     if args.target_snr is not None:
         Config.SNR_TARGET = args.target_snr
     if args.channel_gen_device is not None:
         Config.CHANNEL_GENERATION_DEVICE = args.channel_gen_device
     if args.train_channels_outside_graph is not None:
-        Config.TRAIN_CHANNELS_OUTSIDE_GRAPH = bool(int(args.train_channels_outside_graph))
+        Config.TRAIN_CHANNELS_OUTSIDE_GRAPH = bool(
+            int(args.train_channels_outside_graph)
+        )
     if args.snr_train_range is not None:
         try:
-            low, high = args.snr_train_range.split(',')
+            low, high = args.snr_train_range.split(",")
             Config.SNR_TRAIN_RANGE = (float(low), float(high))
         except Exception as e:
-            raise ValueError(f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high") from e
+            raise ValueError(
+                f"Invalid --snr_train_range '{args.snr_train_range}'. Expected format: low,high"
+            ) from e
     if args.xla_jit is not None:
         Config.XLA_JIT_COMPILE = bool(args.xla_jit)
     if args.seed is not None:
@@ -1554,19 +1665,19 @@ if __name__ == "__main__":
             w_uma=args.w_uma,
             w_rma=args.w_rma,
         )
-    
+
     if args.test_mode:
         Config.EPOCHS = 1
         Config.NUM_TRAIN_SAMPLES = 1000
         Config.NUM_VAL_SAMPLES = 200
         print("Running in TEST MODE (reduced dataset)")
-    
+
     # Set checkpoint directory (C3-only) if not explicitly provided
     checkpoint_dir = args.checkpoint_dir
     if checkpoint_dir is None:
         suffix = f"_{args.run_name}" if args.run_name else ""
         checkpoint_dir = f"./checkpoints_C3_T{Config.T}{suffix}"
-    
+
     if args.require_gpu:
         import tensorflow as tf
 
