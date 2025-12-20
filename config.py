@@ -134,7 +134,6 @@ class Config:
     # Provides 1.5-2x speedup on GPU. Disable if you encounter XLA compilation errors.
     XLA_JIT_COMPILE = True
 
-
     # ==================== Beam Alignment Parameters ====================
     T = 16  # Number of sensing steps (Paper uses T=16 for Figure 4)
     NCB = 8  # Codebook size at BS (number of beams in learned codebook)
@@ -143,14 +142,16 @@ class Config:
     START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
 
     # ==================== Training Parameters ====================
-    BATCH_SIZE = 128  # Reduced to fit ~15 GB VRAM comfortably
+    BATCH_SIZE = 64  # Reduced to fit ~15 GB VRAM comfortably
     EPOCHS = 100
     LEARNING_RATE = 0.001
     # Learning-rate schedule:
     # - "warmup_then_decay": linear warm-up (optional) + exponential decay (default)
     # - "cosine_restarts": cosine annealing with warm restarts
     # - "constant": constant LR (optionally with warm-up), useful for quick LR sweeps
-    LR_SCHEDULE = "warmup_then_decay"  # {"warmup_then_decay","cosine_restarts","constant"}
+    LR_SCHEDULE = (
+        "warmup_then_decay"  # {"warmup_then_decay","cosine_restarts","constant"}
+    )
     # Global LR multiplier applied on top of the chosen schedule (useful for ablations).
     LR_SCALE = 1.0
     LEARNING_RATE_DECAY = 0.96
