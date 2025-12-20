@@ -495,9 +495,8 @@ def _run_lr_range_test(
         for s in active:
             print(f"  {s}: {scenario_weights.get(s, 0.0):.6f}")
 
-    # Optimizer with manually controlled LR.
-    lr_var = tf.Variable(lr_min, trainable=False, dtype=tf.float32)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_var)
+    # Optimizer with manually controlled LR (assign per-step).
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_min)
 
     # Exponential LR sweep.
     lr_ratio = lr_max / lr_min
@@ -511,7 +510,10 @@ def _run_lr_range_test(
     pbar = tqdm(range(lr_steps), desc="LR range test")
     for step in pbar:
         lr_now = lr_min * (lr_mult ** step)
-        lr_var.assign(lr_now)
+        try:
+            optimizer.learning_rate.assign(lr_now)
+        except Exception:
+            optimizer.learning_rate = lr_now
 
         if use_scenario_ds:
             if train_scenario_iter is None:
@@ -569,7 +571,11 @@ def _run_lr_range_test(
         with summary_writer.as_default():
             tf.summary.scalar("lr_range_test/loss", loss, step=step)
             tf.summary.scalar("lr_range_test/smoothed_loss", smooth_loss, step=step)
-            tf.summary.scalar("lr_range_test/learning_rate", lr_var, step=step)
+            tf.summary.scalar(
+                "lr_range_test/learning_rate",
+                tf.constant(lr_now, dtype=tf.float32),
+                step=step,
+            )
             tf.summary.scalar("lr_range_test/bf_gain_db", bf_gain_db, step=step)
             tf.summary.scalar("lr_range_test/gradient_norm", grad_norm, step=step)
             tf.summary.scalar(
