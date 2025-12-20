@@ -96,30 +96,55 @@ def load_c3_model(
             if cand != checkpoint_dir and not os.path.isdir(checkpoint_dir):
                 print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{cand}'")
             break
-        # Fallback: some legacy checkpoints only track weights through the optimizer.
-        # Attempt an optimizer-backed restore before rejecting the checkpoint.
-        has_opt_vars = any(
-            name.startswith("optimizer/_trainable_variables/")
+        # Fallback: legacy checkpoints store weights only under
+        # optimizer/_trainable_variables. We do a shape-based assignment
+        # for non-codebook variables (best-effort when names are missing).
+        opt_names = [
+            name
             for name, _ in tf.train.list_variables(ckpt_path)
-        )
-        if has_opt_vars:
+            if name.startswith("optimizer/_trainable_variables/")
+        ]
+        if opt_names:
             try:
-                optimizer = tf.keras.optimizers.Adam(learning_rate=0.0)
-                optimizer.build(model.trainable_variables)
-                tf.train.Checkpoint(model=model, optimizer=optimizer).restore(
-                    ckpt_path
-                ).expect_partial()
+                reader = tf.train.load_checkpoint(ckpt_path)
+                shape_to_tensors = {}
+                for name in opt_names:
+                    tensor = reader.get_tensor(name)
+                    shape_to_tensors.setdefault(tuple(tensor.shape), []).append(tensor)
+
+                missing_vars = []
+                for var in model.trainable_variables:
+                    if "codebook_" in var.name:
+                        continue
+                    key = tuple(var.shape)
+                    queue = shape_to_tensors.get(key, [])
+                    if not queue:
+                        missing_vars.append(f"{var.name} {tuple(var.shape)}")
+                        continue
+                    var.assign(queue.pop(0))
+
+                if missing_vars:
+                    last_summary = (
+                        f"Incompatible checkpoint: {ckpt_path}\n"
+                        f"{compat.summary()}\n"
+                        "Shape-based restore failed for:\n  - "
+                        + "\n  - ".join(missing_vars[:10])
+                    )
+                    ckpt_path = None
+                    continue
+
                 if cand != checkpoint_dir and not os.path.isdir(checkpoint_dir):
                     print(f"Checkpoint dir '{checkpoint_dir}' not found; using '{cand}'")
                 print(
-                    f"Loaded checkpoint via optimizer weights (legacy format): {ckpt_path}"
+                    f"Loaded checkpoint via shape-matched optimizer variables "
+                    f"(legacy format): {ckpt_path}"
                 )
                 break
             except Exception as e:
                 last_summary = (
                     f"Incompatible checkpoint: {ckpt_path}\n"
                     f"{compat.summary()}\n"
-                    f"Optimizer-restore failed: {e}"
+                    f"Shape-based restore failed: {e}"
                 )
                 ckpt_path = None
                 continue
