@@ -552,12 +552,16 @@ def _run_lr_range_test(
             best_loss = smooth_loss
             best_lr = float(lr_now)
 
-        if step > 10 and smooth_loss > stop_factor * best_loss:
-            print(
-                f"\nStopped LR range test at step {step}: loss exploded "
-                f"({smooth_loss:.4f} > {stop_factor:g}x best {best_loss:.4f})."
-            )
-            break
+        if step > 10 and stop_factor > 1.0:
+            # Robust early-stop criterion that works for negative losses:
+            # stop when smoothed loss is worse than best by ~stop_factor*|best|.
+            threshold = best_loss + abs(best_loss) * (stop_factor - 1.0)
+            if smooth_loss > threshold:
+                print(
+                    f"\nStopped LR range test at step {step}: loss exploded "
+                    f"({smooth_loss:.4f} > {threshold:.4f} threshold)."
+                )
+                break
 
         pbar.set_postfix(
             {
