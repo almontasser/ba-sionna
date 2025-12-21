@@ -142,7 +142,7 @@ class Config:
     START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
 
     # ==================== Training Parameters ====================
-    BATCH_SIZE = 64  # Reduced to fit ~15 GB VRAM comfortably
+    BATCH_SIZE = 128  # Increased to speed up training; ensure GPU memory fits
     EPOCHS = 100
     LEARNING_RATE = 0.001
     # Learning-rate schedule:
@@ -220,7 +220,7 @@ class Config:
     BS_FNN_LAYER_NORM = True
 
     # ==================== Data Generation ====================
-    NUM_TRAIN_SAMPLES = 100000  # Increased from 50K for better training
+    NUM_TRAIN_SAMPLES = 50000  # Reduced for faster epochs
     NUM_VAL_SAMPLES = 10000  # Increased proportionally
     NUM_TEST_SAMPLES = 10000
 
