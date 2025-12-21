@@ -237,6 +237,48 @@ def _require_single_scenario(scenarios: list[str], *, context: str) -> list[str]
     return scenarios
 
 
+def _legacy_restore_from_optimizer_vars(
+    model: tf.keras.Model, ckpt_path: str
+) -> tuple[bool, list[str], int | None]:
+    """
+    Legacy fallback: restore model weights stored under optimizer/_trainable_variables
+    via shape-matching. Returns (ok, missing_vars, epoch_value).
+    """
+    opt_names = [
+        name
+        for name, _ in tf.train.list_variables(ckpt_path)
+        if name.startswith("optimizer/_trainable_variables/")
+    ]
+    if not opt_names:
+        return False, [], None
+
+    reader = tf.train.load_checkpoint(ckpt_path)
+    shape_to_tensors: dict[tuple[int, ...], list[tf.Tensor]] = {}
+    for name in opt_names:
+        tensor = reader.get_tensor(name)
+        shape_to_tensors.setdefault(tuple(tensor.shape), []).append(tensor)
+
+    missing: list[str] = []
+    for var in model.trainable_variables:
+        if "codebook_" in var.name:
+            continue
+        key = tuple(var.shape)
+        queue = shape_to_tensors.get(key, [])
+        if not queue:
+            missing.append(var.name)
+            continue
+        var.assign(queue.pop(0))
+
+    epoch_val: int | None = None
+    try:
+        epoch_tensor = reader.get_tensor("epoch/.ATTRIBUTES/VARIABLE_VALUE")
+        epoch_val = int(epoch_tensor)
+    except Exception:
+        pass
+
+    return (len(missing) == 0), missing, epoch_val
+
+
 def _parse_curriculum_epochs(spec: str) -> list[int]:
     epochs: list[int] = []
     for part in str(spec).split(","):
@@ -933,20 +975,48 @@ def train(
             else:
                 print(
                     "WARNING: Found a checkpoint but it does not match the current model.\n"
-                    "Starting training from scratch.\n"
+                    "Attempting legacy restore from optimizer variables...\n"
                     "Details:\n"
-                    f"{compat.summary()}\n"
-                    "Tip: use a fresh --checkpoint_dir (or delete old checkpoints) after changing architecture."
+                    f"{compat.summary()}"
                 )
-                fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
-                print(f"Using fresh checkpoint dir: {fresh_dir}")
-                os.makedirs(fresh_dir, exist_ok=True)
-                checkpoint_dir = fresh_dir
-                checkpoint_manager = tf.train.CheckpointManager(
-                    checkpoint, checkpoint_dir, max_to_keep=5
+                # Restore any model/ keys (e.g., codebook) and epoch if present.
+                try:
+                    tf.train.Checkpoint(model=model, epoch=epoch_var).restore(
+                        ckpt_path
+                    ).expect_partial()
+                except Exception:
+                    pass
+
+                legacy_ok, missing_vars, epoch_val = _legacy_restore_from_optimizer_vars(
+                    model, ckpt_path
                 )
-                epoch_var.assign(0)
-                start_epoch = 0
+                if legacy_ok:
+                    if epoch_val is not None:
+                        epoch_var.assign(int(epoch_val))
+                    start_epoch = int(epoch_var.numpy())
+                    _set_save_counter_from_path(ckpt_path)
+                    print(
+                        f"✓ Restored model weights from legacy checkpoint {ckpt_path} "
+                        f"(optimizer reset; start_epoch={start_epoch})"
+                    )
+                else:
+                    print(
+                        "WARNING: Legacy restore failed; starting training from scratch.\n"
+                        "Tip: use a fresh --checkpoint_dir (or delete old checkpoints) after changing architecture."
+                    )
+                    if missing_vars:
+                        print("Missing variables (first 10):")
+                        for name in missing_vars[:10]:
+                            print(f"  - {name}")
+                    fresh_dir = f"{checkpoint_dir}_fresh_{timestamp}"
+                    print(f"Using fresh checkpoint dir: {fresh_dir}")
+                    os.makedirs(fresh_dir, exist_ok=True)
+                    checkpoint_dir = fresh_dir
+                    checkpoint_manager = tf.train.CheckpointManager(
+                        checkpoint, checkpoint_dir, max_to_keep=5
+                    )
+                    epoch_var.assign(0)
+                    start_epoch = 0
         else:
             print("Starting training from scratch")
 

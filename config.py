@@ -82,7 +82,7 @@ class Config:
     # Topology sampling (1 UT + 1 BS per sample)
     # NOTE: With pathloss disabled, this mostly affects LOS probability and cluster statistics.
     DISTANCE_RANGE_M = (10.0, 200.0)  # UT-BS 2D distance range
-    UE_SPEED_RANGE = (30, 30)  # 30 to 30 m/s (108 to 108 km/h)
+    UE_SPEED_RANGE = (0, 0)  # 30 to 30 m/s (108 to 108 km/h)
     INDOOR_PROBABILITY = 0.0  # probability the UT is indoor (affects O2I for UMi/UMa)
     UT_HEIGHT_M = 1.5
     BS_HEIGHT_UMI_M = 10.0
@@ -108,7 +108,7 @@ class Config:
     #   https://arxiv.org/abs/1808.04659
     # - Hoydis et al., “Sionna: An Open-Source Library for Next-Generation Physical Layer Research”:
     #   https://arxiv.org/abs/2203.11854
-    MOBILITY_ENABLE = True
+    MOBILITY_ENABLE = False
     # Number of TR 38.901 time samples per episode. If None, uses (T+1) so that
     # we have one channel snapshot for each sensing step and one for the final
     # beamforming step.
@@ -143,7 +143,7 @@ class Config:
 
     # ==================== Training Parameters ====================
     BATCH_SIZE = 64  # Increased to speed up training; ensure GPU memory fits
-    EPOCHS = 20
+    EPOCHS = 70
     LEARNING_RATE = 0.001
     # Learning-rate schedule:
     # - "cosine_restarts": cosine annealing with warm restarts
