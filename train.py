@@ -220,6 +220,23 @@ def _normalize_scenario_weights(
     return {s: float(w) / total for s, w in weights.items()}
 
 
+def _default_checkpoint_dir(config, run_name: str | None) -> str:
+    scenarios = [_canonical_scenario_name(s) for s in getattr(config, "SCENARIOS", ["UMi"])]
+    scenario_tag = "-".join(scenarios) if scenarios else "unknown"
+    suffix = f"_{str(run_name).strip()}" if run_name else ""
+    return f"{config.CHECKPOINT_DIR}_C3_T{config.T}_{scenario_tag}{suffix}"
+
+
+def _require_single_scenario(scenarios: list[str], *, context: str) -> list[str]:
+    scenarios = [_canonical_scenario_name(s) for s in scenarios]
+    if len(scenarios) != 1:
+        raise ValueError(
+            f"{context}: This repo trains one model per scenario. "
+            f"Got scenarios={scenarios}. Train separate runs per scenario."
+        )
+    return scenarios
+
+
 def _parse_curriculum_epochs(spec: str) -> list[int]:
     epochs: list[int] = []
     for part in str(spec).split(","):
@@ -654,6 +671,11 @@ def train(
     print("\n")
     config.print_config()
 
+    _require_single_scenario(
+        list(getattr(config, "SCENARIOS", ["UMi"])),
+        context="training",
+    )
+
     # Seed RNGs for reproducible LR ablations (TF + NumPy + Python).
     seed = int(getattr(config, "RANDOM_SEED", 0) or 0)
     tf.random.set_seed(seed)
@@ -662,7 +684,7 @@ def train(
 
     # Create directories
     if checkpoint_dir is None:
-        checkpoint_dir = f"{config.CHECKPOINT_DIR}_C3_T{config.T}"
+        checkpoint_dir = _default_checkpoint_dir(config, run_name)
     if log_dir is None:
         log_dir = config.LOG_DIR
 
@@ -757,18 +779,8 @@ def train(
         steps_per_epoch = max(1, config.NUM_TRAIN_SAMPLES // config.BATCH_SIZE)
         base_lr = float(config.LEARNING_RATE)
         lr_scale = float(getattr(config, "LR_SCALE", 1.0))
-        lr_schedule_name = str(getattr(config, "LR_SCHEDULE", "exp_decay")).lower()
-        if lr_schedule_name in {"exp_decay"}:
-            decay_steps = max(
-                1, int(config.LEARNING_RATE_DECAY_STEPS * steps_per_epoch)
-            )
-            base_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-                initial_learning_rate=base_lr,
-                decay_steps=decay_steps,
-                decay_rate=config.LEARNING_RATE_DECAY,
-                staircase=True,
-            )
-        elif lr_schedule_name in {"cosine_restarts", "cosine_restart", "cosine"}:
+        lr_schedule_name = str(getattr(config, "LR_SCHEDULE", "constant")).lower()
+        if lr_schedule_name in {"cosine_restarts", "cosine_restart", "cosine"}:
             first_decay_epochs = float(
                 getattr(config, "LR_COSINE_FIRST_DECAY_EPOCHS", 10)
             )
@@ -787,7 +799,7 @@ def train(
         else:
             raise ValueError(
                 f"Unknown LR_SCHEDULE={lr_schedule_name!r}. "
-                "Expected one of: exp_decay, cosine_restarts, constant."
+                "Expected one of: cosine_restarts, constant."
             )
 
         lr_schedule = ScaledSchedule(base_schedule, initial_scale=lr_scale)
@@ -1432,7 +1444,7 @@ if __name__ == "__main__":
         "--lr_schedule",
         type=str,
         default=None,
-        choices=["exp_decay", "cosine_restarts", "constant"],
+        choices=["cosine_restarts", "constant"],
         help="Learning-rate schedule (overrides Config.LR_SCHEDULE)",
     )
     parser.add_argument(
@@ -1635,6 +1647,10 @@ if __name__ == "__main__":
     # Scenario weights (batch-level sampling) or in-run curriculum.
     scenario_curriculum_phases = None
     if args.scenario_curriculum:
+        _require_single_scenario(
+            list(getattr(Config, "SCENARIOS", ["UMi"])),
+            context="--scenario_curriculum",
+        )
         if args.scenario_weights is not None or any(
             x is not None for x in (args.w_umi, args.w_uma, args.w_rma)
         ):
@@ -1658,6 +1674,10 @@ if __name__ == "__main__":
             print(
                 "WARNING: --curriculum_epochs/--curriculum_weights provided without --scenario_curriculum; ignoring."
             )
+        _require_single_scenario(
+            list(getattr(Config, "SCENARIOS", ["UMi"])),
+            context="training",
+        )
         Config.SCENARIO_WEIGHTS = _normalize_scenario_weights(
             list(getattr(Config, "SCENARIOS", ["UMi", "UMa", "RMa"])),
             spec=args.scenario_weights,
@@ -1674,9 +1694,6 @@ if __name__ == "__main__":
 
     # Set checkpoint directory (C3-only) if not explicitly provided
     checkpoint_dir = args.checkpoint_dir
-    if checkpoint_dir is None:
-        suffix = f"_{args.run_name}" if args.run_name else ""
-        checkpoint_dir = f"./checkpoints_C3_T{Config.T}{suffix}"
 
     if args.require_gpu:
         import tensorflow as tf

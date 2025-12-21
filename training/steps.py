@@ -70,14 +70,18 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
     )
 
     loss_finite = tf.math.is_finite(loss)
-    bf_gain_db = tf.where(tf.math.is_finite(bf_gain_db), bf_gain_db, tf.zeros_like(bf_gain_db))
+    bf_gain_db = tf.where(
+        tf.math.is_finite(bf_gain_db), bf_gain_db, tf.zeros_like(bf_gain_db)
+    )
 
     def _apply_update():
         gradients = tape.gradient(loss, model.trainable_variables)
         gradients = [_sanitize_grad(g) for g in gradients]
         gradient_norm = tf.linalg.global_norm(gradients)
         gradient_norm = tf.where(
-            tf.math.is_finite(gradient_norm), gradient_norm, tf.zeros_like(gradient_norm)
+            tf.math.is_finite(gradient_norm),
+            gradient_norm,
+            tf.zeros_like(gradient_norm),
         )
         clip_norm = float(getattr(Config, "GRAD_CLIP_NORM", 5.0))
         gradients, _ = tf.clip_by_global_norm(gradients, clip_norm)
@@ -87,7 +91,12 @@ def train_step(model, optimizer, batch_size, snr_db, channels=None):
     def _skip_update():
         # Note: tf.print removed - XLA doesn't support PrintV2
         # Non-finite losses are rare and handled by gradient sanitization
-        return tf.zeros_like(loss), bf_gain_db, tf.zeros([], dtype=tf.float32), tf.constant(1, dtype=tf.int32)
+        return (
+            tf.zeros_like(loss),
+            bf_gain_db,
+            tf.zeros([], dtype=tf.float32),
+            tf.constant(1, dtype=tf.int32),
+        )
 
     return tf.cond(loss_finite, _apply_update, _skip_update)
 
@@ -137,7 +146,7 @@ def validate(
     Validate the model.
     """
     num_val_batches = max(2, min(num_val_batches, 3))
-    val_batch_size = batch_size * 2
+    val_batch_size = batch_size
 
     total_loss = 0.0
     all_bf_gains_db = []

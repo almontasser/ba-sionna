@@ -37,8 +37,10 @@ def generate_figure_5_scenario_comparison(
                 ckpt_dir = checkpoint_dir_template.format(T=int(T), scenario=s)
             else:
                 ckpt_dir = f"./checkpoints_C3_T{int(T)}_{s}"
-                if not os.path.isdir(ckpt_dir):
-                    ckpt_dir = f"./checkpoints_C3_T{int(T)}"
+            if not os.path.isdir(ckpt_dir):
+                raise FileNotFoundError(
+                    f"No checkpoint dir found for scenario '{s}' and T={int(T)}: {ckpt_dir}"
+                )
             model = load_c3_model(
                 config,
                 ckpt_dir,

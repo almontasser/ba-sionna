@@ -28,8 +28,6 @@ def generate_figure_4_scenario_comparison(
     # Compare each scenario variant separately at evaluation time
     scenario_variants = list(getattr(config, "SCENARIOS", ["UMi", "UMa", "RMa"]))
 
-    default_ckpt_dir = f"./checkpoints_C3_T{config.T}"
-
     results = {
         scenario: {"bf_gain": [], "sat_prob": []} for scenario in scenario_variants
     }
@@ -41,8 +39,10 @@ def generate_figure_4_scenario_comparison(
             ckpt_dir = checkpoint_dir_template.format(T=int(config.T), scenario=scenario)
         else:
             ckpt_dir = f"./checkpoints_C3_T{config.T}_{scenario}"
-            if not os.path.isdir(ckpt_dir):
-                ckpt_dir = default_ckpt_dir
+        if not os.path.isdir(ckpt_dir):
+            raise FileNotFoundError(
+                f"No checkpoint dir found for scenario '{scenario}': {ckpt_dir}"
+            )
         model = load_c3_model(config, ckpt_dir, scenarios=[scenario])
 
         print(f"Evaluating {scenario}...")

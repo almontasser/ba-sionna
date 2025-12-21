@@ -142,19 +142,15 @@ class Config:
     START_BEAM_INDEX = 0  # Used only when RANDOM_START=False
 
     # ==================== Training Parameters ====================
-    BATCH_SIZE = 128  # Increased to speed up training; ensure GPU memory fits
-    EPOCHS = 100
+    BATCH_SIZE = 64  # Increased to speed up training; ensure GPU memory fits
+    EPOCHS = 20
     LEARNING_RATE = 0.001
     # Learning-rate schedule:
-    # - "exp_decay": exponential decay
     # - "cosine_restarts": cosine annealing with warm restarts
-    # - "constant": constant LR (useful for LR sweeps)
-    LR_SCHEDULE = "exp_decay"  # {"exp_decay","cosine_restarts","constant"}
+    # - "constant": constant LR
+    LR_SCHEDULE = "constant"  # {"cosine_restarts","constant"}
     # Global LR multiplier applied on top of the chosen schedule (useful for ablations).
     LR_SCALE = 1.0
-    LEARNING_RATE_DECAY = 0.96
-    LEARNING_RATE_DECAY_STEPS = 10  # Decay every 10 epochs
-
     # Cosine warm restarts (used when LR_SCHEDULE=="cosine_restarts")
     # Note: first decay period is expressed in epochs and converted to steps in train.py.
     LR_COSINE_FIRST_DECAY_EPOCHS = 10
@@ -221,7 +217,7 @@ class Config:
 
     # ==================== Data Generation ====================
     NUM_TRAIN_SAMPLES = 50000  # Reduced for faster epochs
-    NUM_VAL_SAMPLES = 10000  # Increased proportionally
+    NUM_VAL_SAMPLES = 2000  # Reduced for faster validation
     NUM_TEST_SAMPLES = 10000
 
     # ==================== Paths ====================
@@ -280,7 +276,7 @@ class Config:
         print(f"  Batch Size: {cls.BATCH_SIZE}")
         print(f"  Epochs: {cls.EPOCHS}")
         print(f"  Learning Rate: {cls.LEARNING_RATE}")
-        print(f"  LR schedule: {getattr(cls, 'LR_SCHEDULE', 'exp_decay')}")
+        print(f"  LR schedule: {getattr(cls, 'LR_SCHEDULE', 'constant')}")
         print(f"  LR scale: {getattr(cls, 'LR_SCALE', 1.0)}")
         print(f"  Random seed: {getattr(cls, 'RANDOM_SEED', None)}")
         if cls.SNR_TRAIN_RANDOMIZE:

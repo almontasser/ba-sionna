@@ -85,11 +85,6 @@ python train.py
 # Training with custom parameters
 python train.py --epochs 50 --batch_size 256 --lr 0.001
 
-# Per-scenario batch sampling (one scenario per batch; defaults to uniform weights)
-python train.py --scenario_weights "UMi=0.7,UMa=0.2,RMa=0.1"
-# (Equivalent explicit flags)
-python train.py --w_umi 0.7 --w_uma 0.2 --w_rma 0.1
-
 # Increase LR safely (multiplier) and label the run
 python train.py --run_name lr_x3 --lr_scale 3.0
 
@@ -102,7 +97,7 @@ python train.py --test_mode
 
 See `QUICKSTART.md` and `VALIDATION_GUIDE.md` for recommended validation steps.
 
-Train a single-scenario model (default: UMi):
+Train a single-scenario model (default: UMi). This repo trains **one model per scenario**:
 ```bash
 bash train.sh
 ```
